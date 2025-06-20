@@ -1,8 +1,15 @@
 # ComfyUI-SeedVR2_VideoUpscaler
 
+[![View Code](https://img.shields.io/badge/📂_View_Code-GitHub-181717?style=for-the-badge&logo=github)](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler)
+
 A Non official custom nodes for ComfyUI that enables Upscale Video generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
 
-<img src="docs/usage.png" width="100%">
+<video width="700px" controls>
+  <source src="https://github.com/user-attachments/assets/8fbd6c1f-4246-4dbe-8819-4e684490c5f2" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
+<img src="docs/usage.png" width="700px">
 
 ## Features
 
@@ -20,7 +27,7 @@ A Non official custom nodes for ComfyUI that enables Upscale Video generation us
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/your-repo/ComfyUI-SeedVR2_VideoUpscaler.git
+git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git
 ```
 
 2. Install the required dependencies:
@@ -69,7 +76,8 @@ python_embeded\python.exe -m pip install -r flash_attn
 - 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=50 => Prompt executed in 338.63 seconds
 - 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=10 => Prompt executed in 540.22 seconds
 - 3B Model, 97 images, from 512x768 to 720x1080, batch_size=10 => Prompt executed in 183.64 seconds
-- 7B Model, 97images, 512x768 to 1280x1920, batch_size=50, Prompt Failed OOM
+- 7B Model, 50images, 512x768 to 1080x1620, batch_size=50, Prompt executed in 166.89 seconds
+- 7B Model, 97images, 512x768 to 1080x1620, batch_size=97, Prompt executed in 146.72 seconds
 
 2. **NVIDIA RTX4090 24GB VRAM**
 
@@ -80,6 +88,10 @@ python_embeded\python.exe -m pip install -r flash_attn
 
 - Use a lot of VRAM, it will take alllllll!!!!
 - Processing speed depends on GPU capabilities
+
+## Know issues
+
+- On windows, sometime when you click "run" it will break, but if you press "run" again it works
 
 ## Credits
 
