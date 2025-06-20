@@ -91,7 +91,7 @@ python_embeded\python.exe -m pip install -r flash_attn
 
 2. **NVIDIA RTX4090 24GB VRAM**
 
-- 3B Model, 20 images, from 512x768 to 1080x1620, batch_size=1, Prompt executed in 1022.26 seconds
+- 3B Model, 20 images, from 512x768 to 1080x1620, batch_size=1, Prompt executed in 435.13 seconds
 -
 
 ## Limitations

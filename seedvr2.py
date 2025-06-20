@@ -155,7 +155,7 @@ def configure_runner(model):
         })
     else:
         # 3B model: gradient checkpointing enabled
-        vae_config.gradient_checkpoint = True
+        vae_config.gradient_checkpoint = False
         vae_config.__object__ = DictConfig({
             "path": working_vae_path,
             "name": "VideoAutoencoderKLWrapper",
@@ -806,7 +806,34 @@ def download_weight(model):
         hf_hub_download(repo_id=repo_id, filename="ema_vae.pth", local_dir=base_cache_dir)
     return
 
-
+def clear_rope_cache(runner):
+    """🧹 Nettoyer le cache RoPE pour libérer la VRAM"""
+    print("🧹 Nettoyage du cache RoPE...")
+    
+    if hasattr(runner, 'cache') and hasattr(runner.cache, 'cache'):
+        # Compter les entrées avant nettoyage
+        cache_size = len(runner.cache.cache)
+        
+        # Libérer tous les tenseurs du cache
+        for key, value in runner.cache.cache.items():
+            if isinstance(value, (tuple, list)):
+                for item in value:
+                    if hasattr(item, 'cpu'):
+                        item.cpu()
+                        del item
+            elif hasattr(value, 'cpu'):
+                value.cpu()
+                del value
+        
+        # Vider le cache
+        runner.cache.cache.clear()
+        print(f"  ✅ Cache RoPE vidé ({cache_size} entrées supprimées)")
+    
+    # Nettoyage VRAM agressif
+    clear_vram_cache()
+    torch.cuda.empty_cache()
+    
+    print("🎯 Nettoyage cache RoPE terminé!")
 
 class SeedVR2:
     def __init__(self):
@@ -839,6 +866,7 @@ class SeedVR2:
         finally:
             # Aggressive cleanup
             # Move models to CPU before deletion
+            clear_rope_cache(runner)
             if hasattr(runner, 'dit') and runner.dit is not None:
                 runner.dit.cpu()
                 del runner.dit
