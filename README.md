@@ -99,10 +99,6 @@ python_embeded\python.exe -m pip install -r flash_attn
 - Use a lot of VRAM, it will take alllllll!!!!
 - Processing speed depends on GPU capabilities
 
-## Know issues
-
-- On windows, sometime when you click "run" it will break, but if you press "run" again it works
-
 ## Credits
 
 - Original [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) implementation
