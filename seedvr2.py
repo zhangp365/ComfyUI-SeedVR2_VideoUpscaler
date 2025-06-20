@@ -393,11 +393,12 @@ def generation_step(runner, text_embeds_dict, cond_latents, model="seedvr2_ema_3
             else rearrange(video, "c t h w -> t c h w")
         )
         samples.append(sample)
+        """
         print(f"🔍 SAMPLE OUTPUT:")
         print(f"  Sample shape: {sample.shape}, dtype: {sample.dtype}")
         print(f"  Sample min/max: {sample.min():.4f}/{sample.max():.4f}")
         print(f"  Sample has_nan: {torch.isnan(sample).any()}")
-        
+        """
     
     # Nettoyage agressif des tenseurs intermédiaires
     del video_tensors, noises, aug_noises, cond_latents, conditions

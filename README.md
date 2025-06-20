@@ -73,11 +73,14 @@ python_embeded\python.exe -m pip install -r flash_attn
 
 1. **NVIDIA H100 93GB VRAM**
 
+3B or 7B spike to 90+GB VRAM!! but fast!!
+
 - 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=50 => Prompt executed in 338.63 seconds
 - 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=10 => Prompt executed in 540.22 seconds
 - 3B Model, 97 images, from 512x768 to 720x1080, batch_size=10 => Prompt executed in 183.64 seconds
-- 7B Model, 50images, 512x768 to 1080x1620, batch_size=50, Prompt executed in 166.89 seconds
-- 7B Model, 97images, 512x768 to 1080x1620, batch_size=97, Prompt executed in 146.72 seconds
+- 7B Model, 50 images, 512x768 to 1080x1620, batch_size=50, Prompt executed in 166.89 seconds
+- 7B Model, 97 images, 512x768 to 1080x1620, batch_size=97, Prompt executed in 146.72 seconds
+- 7B Model, 200 images, 512x768 to 1080x1620, batch_size=200, Prompt executed in 266.14 seconds
 
 2. **NVIDIA RTX4090 24GB VRAM**
 
