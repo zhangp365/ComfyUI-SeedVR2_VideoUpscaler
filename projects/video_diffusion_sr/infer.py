@@ -326,7 +326,25 @@ class VideoDiffusionInfer():
             
         # Recombiner les résultats sur GPU
         print(f"🔄 Recombining temporal chunks...")
-        final_result = torch.cat([r.to(get_device()) for r in results], dim=2)  # Concat sur dim temporelle
+        
+        # CORRECTION: Après VAE decode, la dimension temporelle devient dim=1 (pas dim=2)
+        # Format après decode: [batch, time, channels, height, width] 
+        # Il faut concaténer sur dim=1 (dimension temporelle)
+        first_result = results[0].to(get_device())
+        print(f"🔍 DEBUG: Shape après VAE decode: {first_result.shape}")
+        
+        if len(first_result.shape) == 5:
+            # Format 5D: [batch, channels, time, height, width] -> concat sur dim=2
+            concat_dim = 2
+        elif len(first_result.shape) == 4:
+            # Format 4D: [batch, time, height, width] -> concat sur dim=1  
+            concat_dim = 1
+        else:
+            # Fallback: assumer dim=1 pour format [time, channels, height, width]
+            concat_dim = 0
+            
+        print(f"🔍 DEBUG: Using concat_dim={concat_dim} for shape {first_result.shape}")
+        final_result = torch.cat([r.to(get_device()) for r in results], dim=concat_dim)
         
         # Nettoyer les résultats temporaires
         del results
@@ -539,101 +557,9 @@ class VideoDiffusionInfer():
         # was_training = self.dit.training
         self.dit.eval()
 
-        # Fonction optimisée pour le DiT avec réduction VRAM robuste
-        def optimized_dit_call(args):
-            # Nettoyage préventif
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            # Préparation des tenseurs en FP16
-            device = args.x_t.device
-            x_t_half = args.x_t.half() if args.x_t.dtype != torch.float16 else args.x_t
-            latents_cond_half = latents_cond.half() if latents_cond.dtype != torch.float16 else latents_cond
-            timestep_half = args.t.repeat(batch_size).half()
-            
-            with torch.cuda.device(device):
-                with torch.autocast("cuda", torch.float16, enabled=True):
-                    # ÉTAPE 1: Calcul positif
-                    vid_input_pos = torch.cat([x_t_half, latents_cond_half], dim=-1)
-                    pos_result = self.dit(
-                        vid=vid_input_pos,
-                        txt=text_pos_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_pos_shapes,
-                        timestep=timestep_half,
-                    ).vid_sample
-                    
-                    # Nettoyer immédiatement
-                    del vid_input_pos
-                    torch.cuda.empty_cache()
-                    
-                    # ÉTAPE 2: Calcul négatif avec offloading si nécessaire
-                    current_vram = self.get_vram_usage()[0]
-                    if current_vram > 18.0:  # Offloader si VRAM élevée
-                        pos_result_cpu = pos_result.cpu()
-                        del pos_result
-                        torch.cuda.empty_cache()
-                        use_cpu_offload = True
-                        #print(f"🔄 Offloading pos_result to CPU")
-                    else:
-                        use_cpu_offload = False
-                    
-                    vid_input_neg = torch.cat([x_t_half, latents_cond_half], dim=-1)
-                    neg_result = self.dit(
-                        vid=vid_input_neg,
-                        txt=text_neg_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_neg_shapes,
-                        timestep=timestep_half,
-                    ).vid_sample
-                    
-                    # Nettoyer immédiatement
-                    del vid_input_neg
-                    torch.cuda.empty_cache()
-                    
-                    # ÉTAPE 3: CFG
-                    cfg_scale_current = (
-                        cfg_scale
-                        if (args.i + 1) / len(self.sampler.timesteps)
-                        <= self.config.diffusion.cfg.get("partial", 1)
-                        else 1.0
-                    )
-                    
-                    # Recharger pos_result si nécessaire
-                    if use_cpu_offload:
-                        pos_result = pos_result_cpu.to(device, dtype=torch.float16)
-                        del pos_result_cpu
-                        torch.cuda.empty_cache()
-                    
-                    # Calcul CFG optimisé
-                    if cfg_scale_current != 1.0:
-                        # Utiliser des opérations in-place pour économiser la mémoire
-                        diff = pos_result.sub_(neg_result)  # diff = pos_result - neg_result
-                        diff.mul_(cfg_scale_current)        # diff *= cfg_scale
-                        result = neg_result.add_(diff)      # result = neg_result + diff
-                        del diff
-                    else:
-                        result = neg_result
-                    
-                    # Nettoyer
-                    if 'pos_result' in locals():
-                        del pos_result
-                    del neg_result
-                    torch.cuda.empty_cache()
-                    
-                    # Appliquer rescale si nécessaire
-                    rescale = self.config.diffusion.cfg.rescale
-                    if rescale > 0 and rescale != 1.0:
-                        result.mul_(rescale)
-            
-            # Nettoyage final
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            return result
 
         # Sampling avec optimisations VRAM
-        print(f"🔄 Starting EulerSampler sampling...")
+        # print(f"🔄 Starting EulerSampler sampling...")
         latents = self.sampler.sample(
             x=latents,
             f=lambda args: classifier_free_guidance_dispatcher(

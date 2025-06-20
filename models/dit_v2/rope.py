@@ -108,6 +108,11 @@ class NaMMRotaryEmbedding3d(MMRotaryEmbeddingBase):
             "mmrope_freqs_3d",
             lambda: self.get_freqs(vid_shape, txt_shape),
         )
+        target_device = vid_q.device
+        if vid_freqs.device != target_device:
+            vid_freqs = vid_freqs.to(target_device)
+        if txt_freqs.device != target_device:
+            txt_freqs = txt_freqs.to(target_device)
         vid_q = rearrange(vid_q, "L h d -> h L d")
         vid_k = rearrange(vid_k, "L h d -> h L d")
         vid_q = apply_rotary_emb(vid_freqs, vid_q.float()).to(vid_q.dtype)

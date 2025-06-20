@@ -54,6 +54,13 @@ python_embeded\python.exe -m pip install -r ComfyUI-SeedVR2_VideoUpscaler/requir
 python_embeded\python.exe -m pip install -r flash_attn
 ```
 
+3. Models
+
+   Will be automtically download into :
+   `models/SEEDVR2`
+
+   or can be found here ([MODELS](https://huggingface.co/numz/SeedVR2_comfyUI/tree/main))
+
 ## Usage
 
 1. In ComfyUI, locate the **SeedVR2 Video Upscaler** node in the node menu.

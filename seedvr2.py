@@ -183,6 +183,8 @@ def configure_runner(model):
     if hasattr(runner.vae, "set_memory_limit"):
         runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
     
+    preinitialize_rope_cache(runner)
+    
     return runner
 
 def load_quantized_state_dict(checkpoint_path, device="cpu"):
@@ -321,15 +323,115 @@ def check_vram_safety(operation_name="Opération", required_gb=2.0):
         return True
     return True
 
-def generation_step(runner, text_embeds_dict, cond_latents, model="seedvr2_ema_3b_fp16.safetensors"):
+def preinitialize_rope_cache(runner):
+    """🚀 Pré-initialiser le cache RoPE pour éviter l'OOM au premier lancement"""
+    print("🔄 Pré-initialisation du cache RoPE...")
+    
+    # Sauvegarder l'état actuel des modèles
+    dit_device = next(runner.dit.parameters()).device
+    vae_device = next(runner.vae.parameters()).device
+    
+    try:
+        # Temporairement déplacer les modèles sur CPU pour libérer VRAM
+        print("  📦 Déplacement temporaire des modèles sur CPU...")
+        runner.dit.to("cpu")
+        runner.vae.to("cpu")
+        clear_vram_cache()
+        
+        # Créer des tenseurs factices pour simuler les shapes communes
+        # Format: [batch, channels, frames, height, width] pour vid_shape
+        # Format: [batch, seq_len] pour txt_shape
+        common_shapes = [
+            # Résolutions communes pour vidéo
+            (torch.tensor([[1, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 1 frame, 77 tokens
+            (torch.tensor([[4, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 4 frames
+            (torch.tensor([[5, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 5 frames (4n+1 format)
+            (torch.tensor([[1, 4, 4]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # Plus grande résolution
+        ]
+        
+        # Créer un cache mock pour la pré-initialisation
+        from .common.cache import Cache
+        temp_cache = Cache()
+        
+        # Pré-calculer les fréquences sur CPU avec des dimensions réduites
+        print("  🧮 Calcul des fréquences RoPE communes...")
+        
+        # Accéder aux modules RoPE dans DiT (recherche récursive)
+        def find_rope_modules(module):
+            rope_modules = []
+            for name, child in module.named_modules():
+                if hasattr(child, 'get_freqs') and callable(getattr(child, 'get_freqs')):
+                    rope_modules.append((name, child))
+            return rope_modules
+        
+        rope_modules = find_rope_modules(runner.dit)
+        print(f"  🎯 Trouvé {len(rope_modules)} modules RoPE")
+        
+        # Pré-calculer pour chaque module RoPE trouvé
+        for name, rope_module in rope_modules:
+            print(f"    ⚙️ Pré-calcul pour {name}...")
+            
+            # Déplacer temporairement le module sur CPU si nécessaire
+            original_device = next(rope_module.parameters()).device if list(rope_module.parameters()) else torch.device('cpu')
+            rope_module.to('cpu')
+            
+            try:
+                for vid_shape, txt_shape in common_shapes:
+                    cache_key = f"720pswin_by_size_bysize_{tuple(vid_shape[0].tolist())}_sd3.mmrope_freqs_3d"
+                    
+                    def compute_freqs():
+                        try:
+                            # Calcul avec dimensions réduites pour éviter OOM
+                            with torch.no_grad():
+                                return rope_module.get_freqs(vid_shape.cpu(), txt_shape.cpu())
+                        except Exception as e:
+                            print(f"      ⚠️ Échec pour {cache_key}: {e}")
+                            # Retourner des tenseurs vides comme fallback
+                            return torch.zeros(1, 64), torch.zeros(1, 64)
+                    
+                    # Stocker dans le cache
+                    temp_cache(cache_key, compute_freqs)
+                    print(f"      ✅ Cached: {cache_key}")
+                
+            except Exception as e:
+                print(f"    ❌ Erreur module {name}: {e}")
+            finally:
+                # Remettre sur le device original
+                rope_module.to(original_device)
+        
+        # Copier le cache temporaire vers le cache du runner
+        if hasattr(runner, 'cache'):
+            runner.cache.cache.update(temp_cache.cache)
+        else:
+            runner.cache = temp_cache
+        
+        print("  ✅ Cache RoPE pré-initialisé avec succès!")
+        
+    except Exception as e:
+        print(f"  ⚠️ Erreur lors de la pré-initialisation RoPE: {e}")
+        print("  🔄 Le modèle fonctionnera mais pourrait avoir un OOM au premier lancement")
+        
+    finally:
+        # IMPORTANT: Remettre les modèles sur leurs devices originaux
+        print("  🔄 Restauration des modèles sur GPU...")
+        runner.dit.to(dit_device)
+        runner.vae.to(vae_device)
+        clear_vram_cache()
+        
+    print("🎯 Pré-initialisation RoPE terminée!")
 
+
+def generation_step(runner, text_embeds_dict, cond_latents, model="seedvr2_ema_3b_fp16.safetensors"):
+    """
     model_name = "3B" if "3b" in model.lower() else "7B"
     print(f"\n🔍 {model_name} - Input Check:")
     print(f"  Cond latents: {cond_latents[0].shape} {cond_latents[0].dtype}")
     print(f"  Text pos: {text_embeds_dict['texts_pos'][0].shape}")
     print(f"  Text neg: {text_embeds_dict['texts_neg'][0].shape}")
     print(f"  Device: {cond_latents[0].device}")
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
     
     # COMME L'ANCIEN CODE: bfloat16 pour TOUT (3B et 7B)
     dtype = torch.bfloat16
@@ -561,7 +663,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             
             # COMME L'ANCIEN CODE: pas de dtype forcé
             video = video.permute(0, 3, 1, 2).to(device)
-            print(f"Read video size: {video.size()}, dtype: {video.dtype}")
+            # print(f"Read video size: {video.size()}, dtype: {video.dtype}")
             
             # OPTIMISATION: Transformations vidéo avec gestion mémoire améliorée
             transformed_video = video_transform(video)
@@ -587,7 +689,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             clear_vram_cache()
             
             # Encodage VAE avec optimisation mémoire
-            print(f"🔄 Encodage VAE: {list(map(lambda x: x.size(), cond_latents))}")
+            # print(f"🔄 Encodage VAE: {list(map(lambda x: x.size(), cond_latents))}")
             
             # OPTIMISATION: Vérifier la VRAM avant l'encodage VAE
             # if not check_vram_safety("Encodage VAE", 3.0):
