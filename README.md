@@ -4,8 +4,10 @@
 
 A Non official custom nodes for ComfyUI that enables Upscale Video generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
 
-<img src="docs/demo_01.jpg" width="700px">
-<img src="docs/usage.png" width="700px">
+<img src="docs/demo_01.jpg">
+<img src="docs/demo_02.jpg">
+
+<img src="docs/usage.png">
 
 ## 🆙 Todo
 
