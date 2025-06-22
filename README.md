@@ -4,8 +4,7 @@
 
 A Non official custom nodes for ComfyUI that enables Upscale Video generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
 
-<video src="https://github.com/user-attachments/assets/8fbd6c1f-4246-4dbe-8819-4e684490c5f2" width="700" controls></video>
-
+<img src="docs/demo_01.jpg" width="700px">
 <img src="docs/usage.png" width="700px">
 
 ## 🆙 Todo
@@ -98,9 +97,22 @@ python_embeded\python.exe -m pip install -r flash_attn
 | 3B fp16 | 97 | 512x768 → 1280x1920 | 50 | 338.63 | 0.29 |
 | 3B fp16 | 97 | 512x768 → 1280x1920 | 10 | 540.22 | 0.18 |
 | 3B fp16 | 97 | 512x768 → 720x1080 | 10 | 183.64 | 0.53 |
-| 7B fp16 | 50 | 512x768 → 1080x1620 | 50 | 166.89 | 0.30 |
-| 7B fp16 | 97 | 512x768 → 1080x1620 | 97 | 146.72 | 0.66 |
-| 7B fp16 | 200 | 512x768 → 1080x1620 | 200 | 266.14 | 0.75 |
+
+| Model  | Images | Resolution          | Batch Size | Time (s) | FPS  |
+| ------ | ------ | ------------------- | ---------- | -------- | ---- |
+| 7B FP8 | 3      | 512×768 → 1080×1620 | 1          | 58.10    | 0.05 |
+| 7B FP8 | 15     | 512×768 → 1080×1620 | 5          | 135.63   | 0.11 |
+| 7B FP8 | 27     | 512×768 → 1080×1620 | 9          | 163.22   | 0.17 |
+| 7B FP8 | 39     | 512×768 → 1080×1620 | 13         | 189.36   | 0.21 |
+| 7B FP8 | 51     | 512×768 → 1080×1620 | 17         | 215.80   | 0.24 |
+| 7B FP8 | 63     | 512×768 → 1080×1620 | 21         | 241.79   | 0.26 |
+| 7B FP8 | 75     | 512×768 → 1080×1620 | 25         | 267.93   | 0.28 |
+| 7B FP8 | 123    | 512×768 → 1080×1620 | 41         | 373.60   | 0.33 |
+| 7B FP8 | 243    | 512×768 → 1080×1620 | 81         | 642.20   | 0.38 |
+| 7B FP8 | 363    | 512×768 → 1080×1620 | 121        | 913.61   | 0.40 |
+| 7B FP8 | 453    | 512×768 → 1080×1620 | 151        | 1132.01  | 0.40 |
+| 7B FP8 | 633    | 512×768 → 1080×1620 | 211        | 1541.09  | 0.41 |
+| 7B FP8 | 903    | 512×768 → 1080×1620 | 301        | OOM      | OOM  |
 
 **NVIDIA RTX4090 24GB VRAM**
 | Model | Images | Resolution | Batch Size | Time (seconds) | FPS |
@@ -118,8 +130,7 @@ python_embeded\python.exe -m pip install -r flash_attn
 
 ## Limitations
 
-- Use a lot of VRAM, it will take all!!!!
--
+- Use a lot of VRAM, it will take all!!
 - Processing speed depends on GPU capabilities
 
 ## Credits
