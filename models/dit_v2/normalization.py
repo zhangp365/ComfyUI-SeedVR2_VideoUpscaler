@@ -52,8 +52,19 @@ class CustomLayerNorm(nn.Module):
             init.zeros_(self.bias)
 
     def forward(self, input):
+        # 🚀 FP8 COMPATIBILITY: Convert parameters to match input dtype
+        # This prevents "Promotion for Float8 Types is not supported" errors
+        weight = self.weight
+        bias = self.bias
+        
+        if self.elementwise_affine and weight is not None:
+            if weight.dtype != input.dtype:
+                weight = weight.to(input.dtype)
+            if bias is not None and bias.dtype != input.dtype:
+                bias = bias.to(input.dtype)
+        
         return F.layer_norm(
-            input, self.normalized_shape, self.weight, self.bias, self.eps)
+            input, self.normalized_shape, weight, bias, self.eps)
 
 
 class CustomRMSNorm(nn.Module):
@@ -86,7 +97,12 @@ class CustomRMSNorm(nn.Module):
         normalized = input / rms
         
         if self.elementwise_affine:
-            return normalized * self.weight
+            # 🚀 FP8 COMPATIBILITY: Convert weight to match normalized dtype
+            # This prevents "Promotion for Float8 Types is not supported" errors
+            weight = self.weight
+            if weight.dtype != normalized.dtype:
+                weight = weight.to(normalized.dtype)
+            return normalized * weight
         return normalized
 
 

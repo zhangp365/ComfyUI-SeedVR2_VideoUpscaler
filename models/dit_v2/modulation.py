@@ -92,10 +92,26 @@ class AdaSingle(nn.Module):
             getattr(self, f"{layer}_gate", None),
         )
 
+        # 🚀 FP8 COMPATIBILITY: Convert parameters to match embedding dtype
+        # This prevents "Promotion for Float8 Types is not supported" errors
+        target_dtype = shiftA.dtype
+        
         if mode == "in":
+            # Convert parameters to match embedding dtype for FP8 compatibility
+            if scaleB is not None and scaleB.dtype != target_dtype:
+                scaleB = scaleB.to(target_dtype)
+            if shiftB is not None and shiftB.dtype != target_dtype:
+                shiftB = shiftB.to(target_dtype)
+            
             return hid.mul_(scaleA + scaleB).add_(shiftA + shiftB)
+            
         if mode == "out":
+            # Convert gate parameter to match embedding dtype for FP8 compatibility
+            if gateB is not None and gateB.dtype != target_dtype:
+                gateB = gateB.to(target_dtype)
+            
             return hid.mul_(gateA + gateB)
+            
         raise NotImplementedError
 
     def extra_repr(self) -> str:

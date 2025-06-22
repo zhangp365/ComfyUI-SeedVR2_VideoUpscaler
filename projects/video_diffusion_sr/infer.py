@@ -12,6 +12,7 @@
 # // See the License for the specific language governing permissions and
 # // limitations under the License.
 
+import time
 from typing import List, Optional, Tuple, Union
 import torch
 import gc
@@ -38,6 +39,38 @@ from ...common.distributed.meta_init_utils import (
 # from common.fs import download
 
 from ...models.dit_v2 import na
+
+def optimized_channels_to_last(tensor):
+    """🚀 Optimized replacement for rearrange(tensor, 'b c ... -> b ... c')
+    Moves channels from position 1 to last position using PyTorch native operations.
+    """
+    if tensor.ndim == 3:  # [batch, channels, spatial]
+        return tensor.permute(0, 2, 1)
+    elif tensor.ndim == 4:  # [batch, channels, height, width]
+        return tensor.permute(0, 2, 3, 1)
+    elif tensor.ndim == 5:  # [batch, channels, depth, height, width]
+        return tensor.permute(0, 2, 3, 4, 1)
+    else:
+        # Fallback for other dimensions - move channel (dim=1) to last
+        dims = list(range(tensor.ndim))
+        dims = [dims[0]] + dims[2:] + [dims[1]]  # [0, 2, 3, ..., 1]
+        return tensor.permute(*dims)
+
+def optimized_channels_to_second(tensor):
+    """🚀 Optimized replacement for rearrange(tensor, 'b ... c -> b c ...')
+    Moves channels from last position to position 1 using PyTorch native operations.
+    """
+    if tensor.ndim == 3:  # [batch, spatial, channels]
+        return tensor.permute(0, 2, 1)
+    elif tensor.ndim == 4:  # [batch, height, width, channels]
+        return tensor.permute(0, 3, 1, 2)
+    elif tensor.ndim == 5:  # [batch, depth, height, width, channels]
+        return tensor.permute(0, 4, 1, 2, 3)
+    else:
+        # Fallback for other dimensions - move last dim to position 1
+        dims = list(range(tensor.ndim))
+        dims = [dims[0], dims[-1]] + dims[1:-1]  # [0, -1, 1, 2, ..., -2]
+        return tensor.permute(*dims)
 
 class VideoDiffusionInfer():
     def __init__(self, config: DictConfig):
@@ -94,8 +127,8 @@ class VideoDiffusionInfer():
             print(f"Loading info: {loading_info}")
             self.dit = meta_non_persistent_buffer_init_fn(self.dit)
 
-        if device in [get_device(), "cuda"]:
-            self.dit.to(get_device())
+        #if device in [get_device(), "cuda"]:
+            #self.dit.to(get_device())
 
         # Print model size.
         num_params = sum(p.numel() for p in self.dit.parameters() if p.requires_grad)
@@ -173,6 +206,7 @@ class VideoDiffusionInfer():
                     latent = self.vae.encode(sample).posterior.mode().squeeze(2)
                 latent = latent.unsqueeze(2) if latent.ndim == 4 else latent
                 latent = rearrange(latent, "b c ... -> b ... c")
+                #latent = optimized_channels_to_last(latent)
                 latent = (latent - shift) * scale
                 latents.append(latent)
 
@@ -185,9 +219,11 @@ class VideoDiffusionInfer():
         return latents
 
     @torch.no_grad()
-    def vae_decode(self, latents: List[Tensor]) -> List[Tensor]:
+    def vae_decode(self, latents: List[Tensor], target_dtype: torch.dtype = None) -> List[Tensor]:
+        """🚀 VAE decode optimisé - décodage direct sans chunking, compatible avec autocast externe"""
         samples = []
         if len(latents) > 0:
+            #t = time.time()
             device = get_device()
             dtype = getattr(torch, self.config.vae.dtype)
             scale = self.config.vae.scaling_factor
@@ -198,243 +234,48 @@ class VideoDiffusionInfer():
             if isinstance(shift, ListConfig):
                 shift = torch.tensor(shift, device=device, dtype=dtype)
 
-            # Group latents of the same shape to batches if enabled.
+            # 🚀 OPTIMISATION 1: Group latents intelligemment pour batch processing
             if self.config.vae.grouping:
                 latents, indices = na.pack(latents)
             else:
                 latents = [latent.unsqueeze(0) for latent in latents]
-
-            # Vae process by each group avec gestion OOM.
-            for latent in latents:
-                latent = latent.to(device, dtype)
+            #print(f"🔄 GROUPING time: {time.time() - t} seconds")
+            t = time.time()
+            # 🚀 OPTIMISATION 2: Traitement batch optimisé avec dtype adaptatif
+            for i, latent in enumerate(latents):
+                # Préparation optimisée du latent
+                # Utiliser target_dtype si fourni (évite double autocast)
+                effective_dtype = target_dtype if target_dtype is not None else dtype
+                latent = latent.to(device, effective_dtype, non_blocking=True)
                 latent = latent / scale + shift
                 latent = rearrange(latent, "b ... c -> b c ...")
+                #latent = optimized_channels_to_second(latent)
                 latent = latent.squeeze(2)
                 
-                # Essayer décodage normal, puis chunked si OOM
-                try:
-                    with torch.autocast("cuda", torch.float16, enabled=True):
+                # 🚀 OPTIMISATION 3: Décodage direct SANS autocast (utilise l'autocast externe)
+                with torch.autocast("cuda", torch.float16, enabled=True):
                         sample = self.vae.decode(latent).sample
-                except torch.OutOfMemoryError:
-                    print(f"⚠️ OOM pendant VAE decode, passage en mode chunk...")
-                    sample = self.vae_decode_chunked(latent)
+                #sample = self.vae.decode(latent).sample
                 
+                # 🚀 OPTIMISATION 4: Post-processing conditionnel
                 if hasattr(self.vae, "postprocess"):
                     sample = self.vae.postprocess(sample)
+                    
                 samples.append(sample)
                 
-                # Nettoyage après chaque décodage
-                torch.cuda.empty_cache()
-
+                # 🚀 OPTIMISATION 5: Nettoyage sélectif
+                if i % 2 == 0 or i == len(latents) - 1:
+                    torch.cuda.empty_cache()
+            print(f"🔄 DECODE time: {time.time() - t} seconds")
+            #t = time.time()
             # Ungroup back to individual sample with the original order.
             if self.config.vae.grouping:
                 samples = na.unpack(samples, indices)
             else:
                 samples = [sample.squeeze(0) for sample in samples]
-
+            #print(f"🔄 UNGROUPING time: {time.time() - t} seconds")
+            #t = time.time()
         return samples
-
-    def vae_decode_chunked(self, latent):
-        """Decode latent par chunks pour économiser la VRAM."""
-        print(f"🔄 VAE decode chunked - shape: {latent.shape}")
-        
-        # Diviser en chunks plus petits selon la dimension batch
-        batch_size = latent.shape[0]
-        if batch_size <= 1:
-            # Si déjà 1, essayer une approche différente selon les dimensions
-            if len(latent.shape) == 5 and latent.shape[2] > 1:
-                # Diviser sur la dimension temporelle/depth (dim 2)
-                return self.vae_decode_temporal_chunks(latent)
-            else:
-                # Essayer division spatiale en dernier recours
-                return self.vae_decode_spatial_chunks(latent)
-        
-        chunk_size = max(1, batch_size // 2)  # Diviser par 2
-        
-        results = []
-        for i in range(0, batch_size, chunk_size):
-            end_idx = min(i + chunk_size, batch_size)
-            chunk = latent[i:end_idx]
-            
-            print(f"🔄 Processing VAE chunk {i//chunk_size + 1}/{(batch_size + chunk_size - 1)//chunk_size}")
-            
-            # Nettoyer avant chaque chunk
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            # Decoder le chunk avec FP16
-            with torch.autocast("cuda", torch.float16, enabled=True):
-                try:
-                    chunk_result = self.vae.decode(chunk).sample
-                except torch.OutOfMemoryError:
-                    # Si encore OOM, essayer division spatiale
-                    chunk_result = self.vae_decode_spatial_chunks(chunk)
-            
-            # Déplacer immédiatement sur CPU pour libérer VRAM
-            results.append(chunk_result.cpu())
-            del chunk_result, chunk
-            
-            # Nettoyage après chaque chunk
-            torch.cuda.empty_cache()
-            
-        # Recombiner les résultats sur GPU
-        print(f"🔄 Recombining VAE chunks...")
-        final_result = torch.cat([r.to(get_device()) for r in results], dim=0)
-        
-        # Nettoyer les résultats temporaires
-        del results
-        torch.cuda.empty_cache()
-        
-        return final_result
-
-    def vae_decode_temporal_chunks(self, latent):
-        """Decode par chunks temporels pour tenseurs 5D."""
-        print(f"🔄 VAE decode temporal chunks - shape: {latent.shape}")
-        
-        # Pour tenseur 5D: [batch, channels, depth, height, width]
-        batch_size, channels, depth, height, width = latent.shape
-        
-        # Diviser sur la dimension temporelle/depth
-        chunk_size = max(1, depth // 2)
-        results = []
-        
-        for i in range(0, depth, chunk_size):
-            end_idx = min(i + chunk_size, depth)
-            chunk = latent[:, :, i:end_idx, :, :]
-            
-            print(f"🔄 Processing temporal chunk {i//chunk_size + 1}/{(depth + chunk_size - 1)//chunk_size} - shape: {chunk.shape}")
-            
-            # Nettoyer avant chaque chunk
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            # Decoder le chunk avec FP16
-            with torch.autocast("cuda", torch.float16, enabled=True):
-                try:
-                    chunk_result = self.vae.decode(chunk).sample
-                except torch.OutOfMemoryError:
-                    # Si encore OOM, essayer division spatiale sur ce chunk
-                    print(f"⚠️ OOM sur chunk temporel, tentative spatiale...")
-                    chunk_result = self.vae_decode_spatial_chunks(chunk)
-            
-            # Déplacer immédiatement sur CPU pour libérer VRAM
-            results.append(chunk_result.cpu())
-            del chunk_result, chunk
-            
-            # Nettoyage après chaque chunk
-            torch.cuda.empty_cache()
-            
-        # Recombiner les résultats sur GPU
-        print(f"🔄 Recombining temporal chunks...")
-        
-        # CORRECTION: Après VAE decode, la dimension temporelle devient dim=1 (pas dim=2)
-        # Format après decode: [batch, time, channels, height, width] 
-        # Il faut concaténer sur dim=1 (dimension temporelle)
-        first_result = results[0].to(get_device())
-        print(f"🔍 DEBUG: Shape après VAE decode: {first_result.shape}")
-        
-        if len(first_result.shape) == 5:
-            # Format 5D: [batch, channels, time, height, width] -> concat sur dim=2
-            concat_dim = 2
-        elif len(first_result.shape) == 4:
-            # Format 4D: [batch, time, height, width] -> concat sur dim=1  
-            concat_dim = 1
-        else:
-            # Fallback: assumer dim=1 pour format [time, channels, height, width]
-            concat_dim = 0
-            
-        print(f"🔍 DEBUG: Using concat_dim={concat_dim} for shape {first_result.shape}")
-        final_result = torch.cat([r.to(get_device()) for r in results], dim=concat_dim)
-        
-        # Nettoyer les résultats temporaires
-        del results
-        torch.cuda.empty_cache()
-        
-        return final_result
-
-    def vae_decode_spatial_chunks(self, latent):
-        """Decode par chunks spatiaux si la division par batch ne suffit pas."""
-        print(f"🔄 VAE decode spatial chunks - shape: {latent.shape}")
-        
-        # Gérer différentes dimensions de tenseur
-        if len(latent.shape) == 5:
-            # Format: [batch, channels, depth, height, width]
-            _, _, _, h, w = latent.shape
-        elif len(latent.shape) == 4:
-            # Format: [batch, channels, height, width]
-            _, _, h, w = latent.shape
-        else:
-            raise ValueError(f"Format de tenseur non supporté: {latent.shape}")
-        
-        # Éviter de diviser si déjà trop petit
-        if h <= 64 or w <= 64:
-            print(f"⚠️ Tenseur trop petit pour division spatiale ({h}x{w}), tentative directe...")
-            try:
-                with torch.autocast("cuda", torch.float16, enabled=True):
-                    return self.vae.decode(latent).sample
-            except torch.OutOfMemoryError:
-                print(f"❌ VAE decode failed - tensor too large for this GPU")
-                raise
-        
-        h_chunk = max(32, h // 2)  # Minimum 32 pixels
-        w_chunk = max(32, w // 2)  # Minimum 32 pixels
-        
-        results = []
-        
-        # Traiter chaque quadrant selon le format du tenseur
-        for i in range(0, h, h_chunk):
-            for j in range(0, w, w_chunk):
-                h_end = min(i + h_chunk, h)
-                w_end = min(j + w_chunk, w)
-                
-                # Découpage selon le nombre de dimensions
-                if len(latent.shape) == 5:
-                    chunk = latent[:, :, :, i:h_end, j:w_end]
-                else:  # 4D
-                    chunk = latent[:, :, i:h_end, j:w_end]
-                
-                print(f"🔄 Processing spatial chunk [{i}:{h_end}, {j}:{w_end}] - shape: {chunk.shape}")
-                
-                torch.cuda.empty_cache()
-                
-                with torch.autocast("cuda", torch.float16, enabled=True):
-                    chunk_result = self.vae.decode(chunk).sample
-                
-                results.append((chunk_result.cpu(), i, h_end, j, w_end))
-                del chunk_result, chunk
-                torch.cuda.empty_cache()
-        
-        # Recombiner les chunks spatiaux
-        print(f"🔄 Recombining spatial chunks...")
-        # Créer un tensor de sortie vide basé sur le premier résultat
-        first_result = results[0][0]
-        output_shape = list(first_result.shape)
-        
-        # Ajuster les dimensions selon le format
-        if len(first_result.shape) >= 4:
-            # Dimensions spatiales sont les 2 dernières
-            h_dim = -2
-            w_dim = -1
-            output_shape[h_dim] = h
-            output_shape[w_dim] = w
-        
-        final_result = torch.zeros(output_shape, dtype=first_result.dtype, device=get_device())
-        
-        for chunk_result, i, h_end, j, w_end in results:
-            chunk_gpu = chunk_result.to(get_device())
-            
-            # Assignation selon le format du tenseur
-            if len(final_result.shape) == 5:
-                final_result[:, :, :, i:h_end, j:w_end] = chunk_gpu
-            else:  # 4D ou autre
-                final_result[:, :, i:h_end, j:w_end] = chunk_gpu
-            
-            del chunk_gpu
-        
-        del results
-        torch.cuda.empty_cache()
-        
-        return final_result
 
     def timestep_transform(self, timesteps: Tensor, latents_shapes: Tensor):
         # Skip if not needed.
@@ -513,11 +354,26 @@ class VideoDiffusionInfer():
             return []
 
         # Monitoring VRAM initial et reset des pics
-        self.reset_vram_peak()
+        #self.reset_vram_peak()
         
         # Set cfg scale
         if cfg_scale is None:
             cfg_scale = self.config.diffusion.cfg.scale
+
+        # 🚀 OPTIMISATION: Détecter le dtype du modèle pour performance optimale
+        model_dtype = next(self.dit.parameters()).dtype
+        
+        # Adapter les dtypes selon le modèle
+        if model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            # FP8 natif: utiliser BFloat16 pour les calculs intermédiaires (compatible)
+            target_dtype = torch.bfloat16
+            #print(f"🚀 FP8 model detected: using BFloat16 for intermediate calculations")
+        elif model_dtype == torch.float16:
+            target_dtype = torch.float16
+            #print(f"🎯 FP16 model: using FP16 pipeline")
+        else:
+            target_dtype = torch.bfloat16
+            #print(f"🎯 BFloat16 model: using BFloat16 pipeline")
 
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
@@ -539,80 +395,127 @@ class VideoDiffusionInfer():
             text_pos_embeds, text_pos_shapes = na.flatten(texts_pos)
             text_neg_embeds, text_neg_shapes = na.flatten(texts_neg)
 
-        # Forcer FP16 pour les embeddings texte
+        # Adapter les embeddings texte au dtype cible (compatible avec FP8)
         if isinstance(text_pos_embeds, torch.Tensor):
-            text_pos_embeds = text_pos_embeds.half()
+            text_pos_embeds = text_pos_embeds.to(target_dtype)
         if isinstance(text_neg_embeds, torch.Tensor):
-            text_neg_embeds = text_neg_embeds.half()
+            text_neg_embeds = text_neg_embeds.to(target_dtype)
 
         # Flatten.
         latents, latents_shapes = na.flatten(noises)
         latents_cond, _ = na.flatten(conditions)
 
-        # Forcer FP16 pour les latents
-        latents = latents.half() if latents.dtype != torch.float16 else latents
-        latents_cond = latents_cond.half() if latents_cond.dtype != torch.float16 else latents_cond
+        # Adapter les latents au dtype cible (compatible avec FP8)
+        latents = latents.to(target_dtype) if latents.dtype != target_dtype else latents
+        latents_cond = latents_cond.to(target_dtype) if latents_cond.dtype != target_dtype else latents_cond
 
         # Enter eval mode.
         # was_training = self.dit.training
-        self.dit.eval()
+        # self.dit.eval()
 
 
-        # Sampling avec optimisations VRAM
+        # Sampling avec optimisations VRAM et autocast adaptatif
         # print(f"🔄 Starting EulerSampler sampling...")
-        latents = self.sampler.sample(
-            x=latents,
-            f=lambda args: classifier_free_guidance_dispatcher(
-                pos=lambda: self.dit(
-                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                    txt=text_pos_embeds,
-                    vid_shape=latents_shapes,
-                    txt_shape=text_pos_shapes,
-                    timestep=args.t.repeat(batch_size),
-                ).vid_sample,
-                neg=lambda: self.dit(
-                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                    txt=text_neg_embeds,
-                    vid_shape=latents_shapes,
-                    txt_shape=text_neg_shapes,
-                    timestep=args.t.repeat(batch_size),
-                ).vid_sample,
-                scale=(
-                    cfg_scale
-                    if (args.i + 1) / len(self.sampler.timesteps)
-                    <= self.config.diffusion.cfg.get("partial", 1)
-                    else 1.0
+        t = time.time()
+        self.dit.to(get_device())
+        print(f"🔄 Dit to GPU time: {time.time() - t} seconds")
+        t = time.time()
+        with torch.autocast("cuda", target_dtype, enabled=True):
+            latents = self.sampler.sample(
+                x=latents,
+                f=lambda args: classifier_free_guidance_dispatcher(
+                    pos=lambda: self.dit(
+                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                        txt=text_pos_embeds,
+                        vid_shape=latents_shapes,
+                        txt_shape=text_pos_shapes,
+                        timestep=args.t.repeat(batch_size),
+                    ).vid_sample,
+                    neg=lambda: self.dit(
+                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                        txt=text_neg_embeds,
+                        vid_shape=latents_shapes,
+                        txt_shape=text_neg_shapes,
+                        timestep=args.t.repeat(batch_size),
+                    ).vid_sample,
+                    scale=(
+                        cfg_scale
+                        if (args.i + 1) / len(self.sampler.timesteps)
+                        <= self.config.diffusion.cfg.get("partial", 1)
+                        else 1.0
+                    ),
+                    rescale=self.config.diffusion.cfg.rescale,
                 ),
-                rescale=self.config.diffusion.cfg.rescale,
-            ),
-        )
+            )
+        print(f"🔄 INFERENCE time: {time.time() - t} seconds")
+        t = time.time()
+        
+        if dit_offload:
+            self.dit.to("cpu")
+            print(f"🔄 Dit to CPU time: {time.time() - t} seconds")
 
         # Exit eval mode.
         #self.dit.train(was_training)
-
+        
+        # 🚀 PIPELINE OPTIMISÉ: Réduire les transferts et nettoyages
+        t = time.time()
         # Unflatten.
         latents = na.unflatten(latents, latents_shapes)
-
-        if dit_offload:
-            self.dit.to(get_device())
-
-        # VAE decode avec optimisations VRAM
-        self.vae.to(get_device())
+        print(f"🔄 UNFLATTEN time: {time.time() - t} seconds")
         
-        # Nettoyer avant VAE decode
-        torch.cuda.empty_cache()
-        gc.collect()
+        # 🚀 OPTIMISATION: Préparer VAE en parallèle si pas d'offloading
+        #if not dit_offload:
+            #t = time.time()
+            #self.vae.to(get_device())
+            #print(f"🔄 VAE to GPU time: {time.time() - t} seconds")
+        #else:
+            #t = time.time()
+            #if dit_offload:
+                #self.dit.to(get_device())
+            #print(f"🔄 DIT to GPU time: {time.time() - t} seconds")
+            #t = time.time()
+            #self.vae.to(get_device())
+            #print(f"🔄 VAE to GPU time: {time.time() - t} seconds")
         
-        # VAE decode avec autocast FP16
-        with torch.autocast("cuda", torch.float16, enabled=True):
-            samples = self.vae_decode(latents)
+        # 🚀 VAE decode optimisé ULTRA-RAPIDE - Élimination des transferts coûteux
+        #t = time.time()
         
-        # Nettoyer immédiatement après VAE
-        self.vae.to("cpu")
-        torch.cuda.empty_cache()
-        gc.collect()
+        # 🎯 Pré-calcul des dtypes (une seule fois)
+        vae_dtype = getattr(torch, self.config.vae.dtype)
+        decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
+        
+        # 🚀 OPTIMISATION MAJEURE: Garder DiT sur GPU, pas de transferts coûteux
+        # VAE decode utilise peu de VRAM comparé aux transferts de modèles
+        #t = time.time()
+        #self.dit.to("cpu")
+        #self.vae.to(get_device())
+        #print(f"🔄 Dit to CPU time: {time.time() - t} seconds")
+        #t = time.time()
+        with torch.autocast("cuda", decode_dtype, enabled=True):
+            samples = self.vae_decode(latents, target_dtype=decode_dtype)
+        #print(f"🔄  ULTRA-FAST VAE DECODE time: {time.time() - t} seconds")
+        #t = time.time()
+        #self.dit.to(get_device())
+        #self.vae.to("cpu")
+        #print(f"🔄 Dit to GPU time: {time.time() - t} seconds")
+        #t = time.time()
+        # 🚀 CORRECTION CRITIQUE: Conversion batch Float16 pour ComfyUI (plus rapide)
+        if samples and len(samples) > 0 and samples[0].dtype != torch.float16:
+            print(f"🔧 Converting {len(samples)} samples from {samples[0].dtype} to Float16")
+            samples = [sample.to(torch.float16, non_blocking=True) for sample in samples]
+        
+        #print(f"🚀 Conversion batch Float16 time: {time.time() - t} seconds")
+        
+        # 🚀 OPTIMISATION: Nettoyage final minimal
+        #t = time.time()
+        #if dit_offload:
+        #    self.vae.to("cpu")
+        #    torch.cuda.empty_cache()
+        #    self.dit.to(get_device())
+        #else:
+            # Garder VAE sur GPU pour les prochains appels
+        #torch.cuda.empty_cache()
+        #print(f"🔄 FINAL CLEANUP time: {time.time() - t} seconds")
 
-        if dit_offload:
-            self.dit.to(get_device())
         
         return samples

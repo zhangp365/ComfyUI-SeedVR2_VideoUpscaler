@@ -11,6 +11,23 @@ A Non official custom nodes for ComfyUI that enables Upscale Video generation us
 
 <img src="docs/usage.png" width="700px">
 
+## 🆙 Todo
+
+- Fixed unloading the 3B model when the process is finished (sorry about that, I'm trying to find out what's going on)
+
+## 🚀 Updates
+
+**2025.06.22**
+
+- 💪 FP8 compatibility !
+- 🚀 Speed Up all Process
+- 🚀 less VRAM consumption (Stay high, batch_size=1 for RTX4090 max, I'm trying to fix that)
+- 🛠️ Better benchmark coming soon
+
+**2025.06.20**
+
+- 🛠️ Initial push
+
 ## Features
 
 - High-quality Upscaling
@@ -73,30 +90,39 @@ python_embeded\python.exe -m pip install -r flash_attn
    - `seed`: a seed but it generate another seed from this one
    - `new_width`: New desired Width, will keep ration on height
    - `cfg_scale`:
-   - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good values are [1,5,9,13,...]
+   - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1", you have
    - `vram_mode`: It will try to help with VRAM, but 'auto' is good
 
 ## Performance
 
-1. **NVIDIA H100 93GB VRAM**
+**NVIDIA H100 93GB VRAM**
+| Model | Images | Resolution | Batch Size | Time (seconds) | FPS |
+| ------------------------- | ------ | ------------------- | ---------- | -------------- | --- |
+| 3B fp16 | 97 | 512x768 → 1280x1920 | 50 | 338.63 | 0.29 |
+| 3B fp16 | 97 | 512x768 → 1280x1920 | 10 | 540.22 | 0.18 |
+| 3B fp16 | 97 | 512x768 → 720x1080 | 10 | 183.64 | 0.53 |
+| 7B fp16 | 50 | 512x768 → 1080x1620 | 50 | 166.89 | 0.30 |
+| 7B fp16 | 97 | 512x768 → 1080x1620 | 97 | 146.72 | 0.66 |
+| 7B fp16 | 200 | 512x768 → 1080x1620 | 200 | 266.14 | 0.75 |
 
-3B or 7B spike to 90+GB VRAM!! but fast!!
-
-- 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=50 => Prompt executed in 338.63 seconds
-- 3B Model, 97 images, from 512x768 to 1280x1920, batch_size=10 => Prompt executed in 540.22 seconds
-- 3B Model, 97 images, from 512x768 to 720x1080, batch_size=10 => Prompt executed in 183.64 seconds
-- 7B Model, 50 images, 512x768 to 1080x1620, batch_size=50, Prompt executed in 166.89 seconds
-- 7B Model, 97 images, 512x768 to 1080x1620, batch_size=97, Prompt executed in 146.72 seconds
-- 7B Model, 200 images, 512x768 to 1080x1620, batch_size=200, Prompt executed in 266.14 seconds
-
-2. **NVIDIA RTX4090 24GB VRAM**
-
-- 3B Model, 20 images, from 512x768 to 1080x1620, batch_size=1, Prompt executed in 435.13 seconds
--
+**NVIDIA RTX4090 24GB VRAM**
+| Model | Images | Resolution | Batch Size | Time (seconds) | FPS |
+| ------------------------- | ------ | ------------------- | ---------- | -------------- | --- |
+| 3B fp8 | 20 | 512x768 → 1080x1620 | 1 | 144.23 | 0.14 |
+| 3B fp16 | 20 | 512x768 → 1080x1620 | 1 | 214.82 | 0.09 |
+| 3B fp8 | 20 | 512x768 → 1280x1920 | 1 | 248.38 | 0.08 |
+| 3B fp8 | 20 | 512x768 → 1480x2220 | 1 | 319.06| 0.06 |
+| 3B fp8 | 20 | 512x768 → 1620x2430 | 1 | 359.28 | 0.06 |
+| 7B fp16 | 5 | 512x768 → 1080x1620 | 1 | 124.36 | 0.04 |
+| 7B fp8 | 5 | 512x768 → 1080x1620 | 1 | 118.27 | 0.04 |
+| 3B fp16 | 5 | 512x768 → 1080x1620 | 1 | 58.23 | 0.08 |
+| 3B fp8 | 5 | 512x768 → 1080x1620 | 1 | 56.76 | 0.09 |
+| 3B fp8 | 10 | 512x768 → 1080x1620 | 5 | 128.73 | 0,07 |
 
 ## Limitations
 
-- Use a lot of VRAM, it will take alllllll!!!!
+- Use a lot of VRAM, it will take all!!!!
+-
 - Processing speed depends on GPU capabilities
 
 ## Credits

@@ -48,11 +48,11 @@ vae:
   memory_limit:
     conv_max_mem: 0.5
     norm_max_mem: 0.5
-  checkpoint: models/SEEDVR2/ema_vae.pth
+  checkpoint: models/SEEDVR2/ema_vae_fp16.safetensors
   scaling_factor: 0.9152
   compile: False
   grouping: False
-  dtype: bfloat16
+  dtype: float16
 
 diffusion:
   schedule:
