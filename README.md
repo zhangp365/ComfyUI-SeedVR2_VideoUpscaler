@@ -4,10 +4,7 @@
 
 A Non official custom nodes for ComfyUI that enables Upscale Video generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
 
-<video width="700px" controls>
-  <source src="https://github.com/user-attachments/assets/8fbd6c1f-4246-4dbe-8819-4e684490c5f2" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+<video src="https://github.com/user-attachments/assets/8fbd6c1f-4246-4dbe-8819-4e684490c5f2" width="700" controls></video>
 
 <img src="docs/usage.png" width="700px">
 
