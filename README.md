@@ -2,7 +2,7 @@
 
 [![View Code](https://img.shields.io/badge/📂_View_Code-GitHub-181717?style=for-the-badge&logo=github)](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler)
 
-A Non official custom nodes for ComfyUI that enables Upscale Video generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
+A Non official custom nodes for ComfyUI that enables Upscale Video/Images generation using [SeedVR2](https://github.com/ByteDance-Seed/SeedVR).
 
 <img src="docs/demo_01.jpg">
 <img src="docs/demo_02.jpg">

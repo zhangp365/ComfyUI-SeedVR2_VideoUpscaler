@@ -3,45 +3,45 @@ einops                   # Tensor operations
 
 # Training
 omegaconf==2.3.0                # Configuration system.
-lpips==0.1.4                    # LPIPS model for VAE training
+#lpips==0.1.4                    # LPIPS model for VAE training
 flash_attn
 # Dataloading
-bson==0.5.10                    # bson for Image dataloading
-tensorflow                      # Video dataloading
-opencv-python		         # OpenCV
-sentencepiece            # For Text Encoder
+#bson==0.5.10                    # bson for Image dataloading
+#tensorflow                      # Video dataloading
+#opencv-python		         # OpenCV
+#sentencepiece            # For Text Encoder
 
 # Modeling
 diffusers               # Diffusers
 rotary-embedding-torch==0.5.3   # Rotary positional embedding
-transformers            # Transformers
+#transformers            # Transformers
 torchvision             # Torchvision
-tiktoken                 # Tiktoken for generation
-transformers_stream_generator #LLM generation support
+#tiktoken                 # Tiktoken for generation
+#transformers_stream_generator #LLM generation support
 pytorch-extension #pytorch extension
 
 # Metrics
-torchmetrics             # Core module for metric
-pycocotools==2.0.7              # COCO-related
-torch-fidelity           # FID-related
+#torchmetrics             # Core module for metric
+#pycocotools==2.0.7              # COCO-related
+#torch-fidelity           # FID-related
 
 # Experiment Tracking
-moviepy                  # WandB Logging Image & Video
-imageio                 # WandB Logging Image & Video
-tabulate                 # Logging Table
-deepdiff                 # Find difference of config
+#moviepy                  # WandB Logging Image & Video
+#imageio                 # WandB Logging Image & Video
+#tabulate                 # Logging Table
+#deepdiff                 # Find difference of config
 rotary_embedding_torch
 # Testing
-parameterized==0.9.0            # Define multiple tests through decorators.
+#parameterized==0.9.0            # Define multiple tests through decorators.
 
 # Notebook
 mediapy                  # Notebook Visualization
 
 # DevOPs
-black >= 24, < 25               # Code formatting
-flake8 >= 7, < 8                # Code style
-isort >= 5, < 6                 # Import sorting
-pre-commit               # Pre-commit hooks
-expecttest==0.2.1               # Pytorch dist tests
-hypothesis==6.100.1             # Fix randomness
-av                     # Process audio and video
+#black >= 24, < 25               # Code formatting
+#flake8 >= 7, < 8                # Code style
+#isort >= 5, < 6                 # Import sorting
+#pre-commit               # Pre-commit hooks
+#expecttest==0.2.1               # Pytorch dist tests
+#hypothesis==6.100.1             # Fix randomness
+#av                     # Process audio and video
