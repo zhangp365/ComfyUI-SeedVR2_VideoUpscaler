@@ -1728,9 +1728,7 @@ class SeedVR2:
                 "new_width": ("INT", {"default": 1280, "min": 1, "max": 2048, "step": 1}),
                 "cfg_scale": ("FLOAT", {"default": 1, "min": 0.01, "max": 2.0, "step": 0.01}),
                 "batch_size": ("INT", {"default": 5, "min": 1, "max": 2048, "step": 1}),
-                "preserve_vram": ("BOOLEAN", {"default": True}),
-                "tile_size": ("INT", {"default": 512, "min": 128, "max": 2048, "step": 32}),
-                "overlap": ("INT", {"default": 64, "min": 0, "max": 256, "step": 16}),
+                "preserve_vram": ("BOOLEAN", {"default": True})
             },
         }
     RETURN_NAMES = ("image", )
@@ -1738,7 +1736,7 @@ class SeedVR2:
     FUNCTION = "execute"
     CATEGORY = "SEEDVR2"
 
-    def execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram, tile_size, overlap):
+    def execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram):
         t_tot = time.time()
         download_weight(model)
         #print(f"🔄 Download weight time: {time.time() - t_tot} seconds")
