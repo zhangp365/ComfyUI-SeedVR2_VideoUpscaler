@@ -61,8 +61,7 @@ from .common.seed import set_seed
 import os
 
 
-def configure_runner(model, tile_size=512, overlap=64):
-    """Configure runner with user-defined tile parameters"""
+def configure_runner(model):
     from .common.config import load_config, create_object
     from omegaconf import DictConfig, OmegaConf
     import importlib
@@ -178,7 +177,7 @@ def configure_runner(model, tile_size=512, overlap=64):
     
     # Configure models directly WITHOUT decorators
     configure_dit_model_inference(runner, device, checkpoint_path, config)
-    configure_vae_model_inference(runner, config, device, tile_size, overlap)
+    configure_vae_model_inference(runner, config, device)
     
     # Set memory limit if available
     if hasattr(runner.vae, "set_memory_limit"):
@@ -317,7 +316,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config):
     '''
 
 
-def configure_vae_model_inference(runner, config, device, tile_size=512, overlap=64):
+def configure_vae_model_inference(runner, config, device):
     """Configure VAE model for inference without distributed decorators"""
     #print("Entering configure_vae_model (inference)")
     
@@ -372,24 +371,8 @@ def configure_vae_model_inference(runner, config, device, tile_size=512, overlap
     
     runner.vae.load_state_dict(state)
 
-    # 🎯 Set causal slicing with user-defined tile parameters
-    if hasattr(runner.vae, "set_causal_slicing"):
-        # Calculate split_size from user's tile_size
-        # tile_size is in pixel space, need to convert to latent space
-        # VAE has 8x spatial downscaling, so divide by 8
-        latent_tile_size = tile_size // 8
-        
-        # Apply user's tile settings
-        print(f"🎯 Applying user tile settings: tile_size={tile_size}px → latent_split_size={latent_tile_size}")
-        #print(f"   Overlap: {overlap}px")
-        
-        runner.vae.set_causal_slicing(
-            split_size=latent_tile_size,  # User-defined tile size in latent space
-            memory_device=device,  # Required parameter for memory management
-            # Note: overlap is for future use, currently VAE doesn't support overlap parameter
-        )
-    elif hasattr(config.vae, "slicing"):
-        # Fallback to config if set_causal_slicing not available
+    # Set causal slicing
+    if hasattr(runner.vae, "set_causal_slicing") and hasattr(config.vae, "slicing"):
         runner.vae.set_causal_slicing(**config.vae.slicing)
 
 def get_vram_usage():
@@ -1760,7 +1743,7 @@ class SeedVR2:
         download_weight(model)
         #print(f"🔄 Download weight time: {time.time() - t_tot} seconds")
         t = time.time()
-        runner = configure_runner(model, tile_size, overlap)
+        runner = configure_runner(model)
         print(f"🔄 Configure runner time: {time.time() - t} seconds")
         t = time.time()
         #vram_mode = preserve_vram
