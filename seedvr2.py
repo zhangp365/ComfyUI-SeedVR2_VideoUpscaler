@@ -14,10 +14,13 @@
 
 import os
 import torch
+import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
 import numpy as np
 #print(os.getcwd())
+import datetime
+import itertools
 import folder_paths
 from tqdm import tqdm
 #from models.dit import na
@@ -378,12 +381,12 @@ def configure_vae_model_inference(runner, config, device, tile_size=512, overlap
         
         # Apply user's tile settings
         print(f"🎯 Applying user tile settings: tile_size={tile_size}px → latent_split_size={latent_tile_size}")
-        print(f"   Overlap: {overlap}px (temporal overlap for smooth transitions)")
+        #print(f"   Overlap: {overlap}px")
         
         runner.vae.set_causal_slicing(
             split_size=latent_tile_size,  # User-defined tile size in latent space
             memory_device=device,  # Required parameter for memory management
-            overlap=overlap,  # 🚀 NEW: User-defined overlap for smooth transitions
+            # Note: overlap is for future use, currently VAE doesn't support overlap parameter
         )
     elif hasattr(config.vae, "slicing"):
         # Fallback to config if set_causal_slicing not available
@@ -1743,8 +1746,8 @@ class SeedVR2:
                 "cfg_scale": ("FLOAT", {"default": 1, "min": 0.01, "max": 2.0, "step": 0.01}),
                 "batch_size": ("INT", {"default": 5, "min": 1, "max": 2048, "step": 1}),
                 "preserve_vram": ("BOOLEAN", {"default": True}),
-                "tile_size": ("INT", {"default": 32, "min": 32, "max": 2048, "step": 32}),
-                "overlap": ("INT", {"default": 0, "min": 0, "max": 256, "step": 16}),
+                "tile_size": ("INT", {"default": 512, "min": 128, "max": 2048, "step": 32}),
+                "overlap": ("INT", {"default": 64, "min": 0, "max": 256, "step": 16}),
             },
         }
     RETURN_NAMES = ("image", )

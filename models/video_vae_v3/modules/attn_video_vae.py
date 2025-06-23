@@ -1187,9 +1187,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         self, x: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED
     ) -> torch.Tensor:
         _x = x.to(self.device)
-        # 🚀 Pass user-defined overlap to slicing function
-        overlap = getattr(self, 'slicing_overlap', None)
-        _x = causal_conv_slice_inputs(_x, self.slicing_sample_min_size, memory_state=memory_state, overlap=overlap)
+        _x = causal_conv_slice_inputs(_x, self.slicing_sample_min_size, memory_state=memory_state)
         h = self.encoder(_x, memory_state=memory_state)
         if self.quant_conv is not None:
             output = self.quant_conv(h, memory_state=memory_state)
@@ -1202,9 +1200,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         self, z: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED
     ) -> torch.Tensor:
         _z = z.to(self.device)
-        # 🚀 Pass user-defined overlap to slicing function
-        overlap = getattr(self, 'slicing_overlap', None)
-        _z = causal_conv_slice_inputs(_z, self.slicing_latent_min_size, memory_state=memory_state, overlap=overlap)
+        _z = causal_conv_slice_inputs(_z, self.slicing_latent_min_size, memory_state=memory_state)
         if self.post_quant_conv is not None:
             _z = self.post_quant_conv(_z, memory_state=memory_state)
         output = self.decoder(_z, memory_state=memory_state)
@@ -1328,7 +1324,6 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         *,
         split_size: Optional[int],
         memory_device: _memory_device_t,
-        overlap: int = 64,  # 🚀 NEW: User-defined overlap parameter
     ):
         assert (
             split_size is None or memory_device is not None
@@ -1337,9 +1332,6 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
             self.enable_slicing()
             self.slicing_sample_min_size = split_size
             self.slicing_latent_min_size = split_size // self.temporal_downsample_factor
-            # 🚀 Store overlap for use in slicing functions
-            self.slicing_overlap = overlap
-            print(f"   ✅ VAE slicing enabled: split_size={split_size}, overlap={overlap}")
         else:
             self.disable_slicing()
         for module in self.modules():
