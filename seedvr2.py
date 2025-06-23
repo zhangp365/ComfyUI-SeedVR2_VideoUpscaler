@@ -14,13 +14,10 @@
 
 import os
 import torch
-import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
 import numpy as np
 #print(os.getcwd())
-import datetime
-import itertools
 import folder_paths
 from tqdm import tqdm
 #from models.dit import na
@@ -61,7 +58,8 @@ from .common.seed import set_seed
 import os
 
 
-def configure_runner(model):
+def configure_runner(model, tile_size=512, overlap=64):
+    """Configure runner with user-defined tile parameters"""
     from .common.config import load_config, create_object
     from omegaconf import DictConfig, OmegaConf
     import importlib
@@ -177,7 +175,7 @@ def configure_runner(model):
     
     # Configure models directly WITHOUT decorators
     configure_dit_model_inference(runner, device, checkpoint_path, config)
-    configure_vae_model_inference(runner, config, device)
+    configure_vae_model_inference(runner, config, device, tile_size, overlap)
     
     # Set memory limit if available
     if hasattr(runner.vae, "set_memory_limit"):
@@ -316,7 +314,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config):
     '''
 
 
-def configure_vae_model_inference(runner, config, device):
+def configure_vae_model_inference(runner, config, device, tile_size=512, overlap=64):
     """Configure VAE model for inference without distributed decorators"""
     #print("Entering configure_vae_model (inference)")
     
@@ -371,8 +369,24 @@ def configure_vae_model_inference(runner, config, device):
     
     runner.vae.load_state_dict(state)
 
-    # Set causal slicing
-    if hasattr(runner.vae, "set_causal_slicing") and hasattr(config.vae, "slicing"):
+    # 🎯 Set causal slicing with user-defined tile parameters
+    if hasattr(runner.vae, "set_causal_slicing"):
+        # Calculate split_size from user's tile_size
+        # tile_size is in pixel space, need to convert to latent space
+        # VAE has 8x spatial downscaling, so divide by 8
+        latent_tile_size = tile_size // 8
+        
+        # Apply user's tile settings
+        print(f"🎯 Applying user tile settings: tile_size={tile_size}px → latent_split_size={latent_tile_size}")
+        print(f"   Overlap: {overlap}px (temporal overlap for smooth transitions)")
+        
+        runner.vae.set_causal_slicing(
+            split_size=latent_tile_size,  # User-defined tile size in latent space
+            memory_device=device,  # Required parameter for memory management
+            overlap=overlap,  # 🚀 NEW: User-defined overlap for smooth transitions
+        )
+    elif hasattr(config.vae, "slicing"):
+        # Fallback to config if set_causal_slicing not available
         runner.vae.set_causal_slicing(**config.vae.slicing)
 
 def get_vram_usage():
@@ -1728,7 +1742,9 @@ class SeedVR2:
                 "new_width": ("INT", {"default": 1280, "min": 1, "max": 2048, "step": 1}),
                 "cfg_scale": ("FLOAT", {"default": 1, "min": 0.01, "max": 2.0, "step": 0.01}),
                 "batch_size": ("INT", {"default": 5, "min": 1, "max": 2048, "step": 1}),
-                "preserve_vram": ("BOOLEAN", {"default": True})
+                "preserve_vram": ("BOOLEAN", {"default": True}),
+                "tile_size": ("INT", {"default": 32, "min": 32, "max": 2048, "step": 32}),
+                "overlap": ("INT", {"default": 0, "min": 0, "max": 256, "step": 16}),
             },
         }
     RETURN_NAMES = ("image", )
@@ -1736,12 +1752,12 @@ class SeedVR2:
     FUNCTION = "execute"
     CATEGORY = "SEEDVR2"
 
-    def execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram):
+    def execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram, tile_size, overlap):
         t_tot = time.time()
         download_weight(model)
         #print(f"🔄 Download weight time: {time.time() - t_tot} seconds")
         t = time.time()
-        runner = configure_runner(model)
+        runner = configure_runner(model, tile_size, overlap)
         print(f"🔄 Configure runner time: {time.time() - t} seconds")
         t = time.time()
         #vram_mode = preserve_vram
@@ -1769,8 +1785,8 @@ class SeedVR2:
             # Multiple cleanup passes
             gc.collect()
             torch.cuda.empty_cache()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            #if torch.cuda.is_available():
+                #torch.cuda.synchronize()
         print(f"🔄 Execution time: {time.time() - t_tot} seconds")
         return (sample, )
 

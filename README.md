@@ -88,35 +88,30 @@ python_embeded\python.exe -m pip install -r flash_attn
    - `seed`: a seed but it generate another seed from this one
    - `new_width`: New desired Width, will keep ration on height
    - `cfg_scale`:
-   - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1", you have
-   - `vram_mode`: It will try to help with VRAM, but 'auto' is good
+   - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1"
+   - `preserve_vram`: If true, It will unload unused models during process, longer but works, otherwise probably OOM with
 
 ## Performance
 
 **NVIDIA H100 93GB VRAM**
-| Model | Images | Resolution | Batch Size | Time (seconds) | FPS |
-| ------------------------- | ------ | ------------------- | ---------- | -------------- | --- |
-| 3B fp16 | 97 | 512x768 → 1280x1920 | 50 | 338.63 | 0.29 |
-| 3B fp16 | 97 | 512x768 → 1280x1920 | 10 | 540.22 | 0.18 |
-| 3B fp16 | 97 | 512x768 → 720x1080 | 10 | 183.64 | 0.53 |
 
-| Model  | Images | Resolution          | Batch Size | Time (s) | FPS  |
-| ------ | ------ | ------------------- | ---------- | -------- | ---- |
-| 7B FP8 | 3      | 512×768 → 1080×1620 | 1          | 58.10    | 0.05 |
-| 7B FP8 | 15     | 512×768 → 1080×1620 | 5          | 135.63   | 0.11 |
-| 7B FP8 | 27     | 512×768 → 1080×1620 | 9          | 163.22   | 0.17 |
-| 7B FP8 | 39     | 512×768 → 1080×1620 | 13         | 189.36   | 0.21 |
-| 7B FP8 | 51     | 512×768 → 1080×1620 | 17         | 215.80   | 0.24 |
-| 7B FP8 | 63     | 512×768 → 1080×1620 | 21         | 241.79   | 0.26 |
-| 7B FP8 | 75     | 512×768 → 1080×1620 | 25         | 267.93   | 0.28 |
-| 7B FP8 | 123    | 512×768 → 1080×1620 | 41         | 373.60   | 0.33 |
-| 7B FP8 | 243    | 512×768 → 1080×1620 | 81         | 642.20   | 0.38 |
-| 7B FP8 | 363    | 512×768 → 1080×1620 | 121        | 913.61   | 0.40 |
-| 7B FP8 | 453    | 512×768 → 1080×1620 | 151        | 1132.01  | 0.40 |
-| 7B FP8 | 633    | 512×768 → 1080×1620 | 211        | 1541.09  | 0.41 |
-| 7B FP8 | 903    | 512×768 → 1080×1620 | 301        | OOM      | OOM  |
+| Images | Resolution          | Batch Size | Time 7B FP8 (s) | Time 7B FP16 (s) | FPS 7B FP8 | FPS 7B FP16 |
+| ------ | ------------------- | ---------- | --------------- | ---------------- | ---------- | ----------- |
+| 3      | 512×768 → 1080×1620 | 1          | 58.10           | 60.13            | 0.05       | 0.05        |
+| 15     | 512×768 → 1080×1620 | 5          | 135.63          | 144.18           | 0.11       | 0.10        |
+| 27     | 512×768 → 1080×1620 | 9          | 163.22          | 177.61           | 0.17       | 0.15        |
+| 39     | 512×768 → 1080×1620 | 13         | 189.36          | 210.11           | 0.21       | 0.19        |
+| 51     | 512×768 → 1080×1620 | 17         | 215.80          | 242.64           | 0.24       | 0.21        |
+| 63     | 512×768 → 1080×1620 | 21         | 241.79          | 275.55           | 0.26       | 0.23        |
+| 75     | 512×768 → 1080×1620 | 25         | 267.93          | 308.51           | 0.28       | 0.24        |
+| 123    | 512×768 → 1080×1620 | 41         | 373.60          | 440.01           | 0.33       | 0.28        |
+| 243    | 512×768 → 1080×1620 | 81         | 642.20          | 780.20           | 0.38       | 0.31        |
+| 363    | 512×768 → 1080×1620 | 121        | 913.61          | 1114.32          | 0.40       | 0.33        |
+| 453    | 512×768 → 1080×1620 | 151        | 1132.01         | 1384.86          | 0.40       | 0.33        |
+| 633    | 512×768 → 1080×1620 | 211        | 1541.09         | 1887.62          | 0.41       | 0.34        |
+| 903    | 512×768 → 1080×1620 | 301        | OOM             | OOM              | OOM        | OOM         |
 
-**NVIDIA RTX4090 24GB VRAM**
+**NVIDIA RTX4090 24GB VRAM** (preserved_vram=off)
 | Model | Images | Resolution | Batch Size | Time (seconds) | FPS |
 | ------------------------- | ------ | ------------------- | ---------- | -------------- | --- |
 | 3B fp8 | 20 | 512x768 → 1080x1620 | 1 | 144.23 | 0.14 |
