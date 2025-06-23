@@ -261,7 +261,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config):
     from .common.config import create_object
     
     # Create dit model on CPU first
-    with torch.device("cpu"):
+    with torch.device(device):
         runner.dit = create_object(config.dit.model)
     runner.dit.set_gradient_checkpointing(config.dit.gradient_checkpoint)
 
@@ -284,7 +284,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config):
         keep_native_fp8 = True  # Permet d'optimiser les modèles FP8
         
         # Support for quantized models with native FP8
-        state = load_quantized_state_dict(checkpoint, "cpu", keep_native_fp8=keep_native_fp8)
+        state = load_quantized_state_dict(checkpoint, device, keep_native_fp8=keep_native_fp8)
         runner.dit.load_state_dict(state, strict=True, assign=True)
         #print(f"Loading pretrained ckpt from {checkpoint}")
         #print(f"Loading info: {loading_info}")
@@ -296,6 +296,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config):
     #model_dtype = next(runner.dit.parameters()).dtype
     #print(f"🎯 Applying compatibility wrapper for all models (RoPE → BFloat16)...")
     runner.dit = FP8CompatibleDiT(runner.dit)
+    #runner.dit.to("cpu")
     '''
     if model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
         print(f"✅ FP8 Native Pipeline with Universal Wrapper Active!")
