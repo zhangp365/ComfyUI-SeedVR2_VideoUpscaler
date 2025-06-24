@@ -345,6 +345,7 @@ class VideoDiffusionInfer():
         texts_neg: Union[List[str], List[Tensor], List[Tuple[Tensor]]],
         cfg_scale: Optional[float] = None,
         dit_offload: bool = False,
+        temporal_overlap: int = 0,
     ) -> List[Tensor]:
         assert len(noises) == len(conditions) == len(texts_pos) == len(texts_neg)
         batch_size = len(noises)
@@ -484,15 +485,10 @@ class VideoDiffusionInfer():
         vae_dtype = getattr(torch, self.config.vae.dtype)
         decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
         
-        # 🚀 OPTIMISATION MAJEURE: Garder DiT sur GPU, pas de transferts coûteux
-        # VAE decode utilise peu de VRAM comparé aux transferts de modèles
-        #t = time.time()
-        #self.dit.to("cpu")
-        #self.vae.to(get_device())
-        #print(f"🔄 Dit to CPU time: {time.time() - t} seconds")
-        #t = time.time()
+        
         with torch.autocast("cuda", decode_dtype, enabled=True):
             samples = self.vae_decode(latents, target_dtype=decode_dtype)
+        print(f"🔄 Samples shape: {samples[0].shape}")
         #print(f"🔄  ULTRA-FAST VAE DECODE time: {time.time() - t} seconds")
         #t = time.time()
         #self.dit.to(get_device())

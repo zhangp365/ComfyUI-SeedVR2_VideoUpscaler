@@ -515,7 +515,7 @@ def preinitialize_rope_cache(runner):
     #print("🎯 Pre-init RoPE done!")
 
 
-def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents):
+def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, temporal_overlap):
     """
     model_name = "3B" if "3b" in model.lower() else "7B"
     print(f"\n🔍 {model_name} - Input Check:")
@@ -590,6 +590,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents):
                 noises=noises,
                 conditions=conditions,
                 dit_offload=preserve_vram,  # Offload important
+                temporal_overlap=temporal_overlap,
                 **text_embeds_dict,
                 
             )
@@ -598,13 +599,16 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents):
     # Traitement des échantillons avec OPTIMISATION 🚀
     t = time.time()
     samples = optimized_video_rearrange(video_tensors)
-    #print(f"🚀 OPTIMIZED REARRANGE time: {time.time() - t} seconds")
+    last_latents = samples[-temporal_overlap:]
+    print(f"🔄 sample size: {len(samples)}")
+    print(f"🔄 Samples shape: {samples[0].shape}")
+    print(f"🚀 OPTIMIZED REARRANGE time: {time.time() - t} seconds")
     
     # Nettoyage agressif des tenseurs intermédiaires
     #del video_tensors, noises, aug_noises, cond_latents, conditions
     #clear_vram_cache()
     
-    return samples
+    return samples, last_latents
 
 def auto_adjust_batch_size(initial_batch_size, available_vram_gb):
     """Ajuster automatiquement la taille de batch selon la VRAM et contrainte 4n+1"""
@@ -626,7 +630,37 @@ def auto_adjust_batch_size(initial_batch_size, available_vram_gb):
     #print(f"🎯 Optimal batch size (4n+1): {optimal_batch} (avoids padding)")
     return optimal_batch
 
-def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, preserve_vram="auto", model="seedvr2_ema_3b_fp16.safetensors"):
+def temporal_latent_blending(latents1, latents2, blend_frames):
+    """
+    🎨 Fondu temporel dans l'espace latent pour éviter les discontinuités
+    
+    Args:
+        latents1: Latents du batch précédent (fins)
+        latents2: Latents du batch actuel (début) 
+        blend_frames: Nombre de frames à fondre
+    
+    Returns:
+        Latents fondus pour transition douce
+    """
+    if latents1.shape[0] != latents2.shape[0]:
+        # Ajuster les dimensions si nécessaire
+        min_frames = min(latents1.shape[0], latents2.shape[0])
+        latents1 = latents1[:min_frames]
+        latents2 = latents2[:min_frames]
+    
+    # Créer des poids de fondu linéaire
+    # Frame 0: 100% latents1, 0% latents2
+    # Frame n: 0% latents1, 100% latents2
+    weights1 = torch.linspace(1.0, 0.0, blend_frames).view(-1, 1, 1, 1).to(latents1.device)
+    weights2 = torch.linspace(0.0, 1.0, blend_frames).view(-1, 1, 1, 1).to(latents2.device)
+    
+    # Appliquer le fondu
+    blended_latents = weights1 * latents1 + weights2 * latents2
+    
+    return blended_latents
+
+
+def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, preserve_vram="auto", temporal_overlap=0):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # 🚀 OPTIMISATION: Détecter le dtype réel du modèle pour performance maximale
@@ -711,29 +745,15 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         """Version CORRECTE qui respecte la contrainte: frames % 4 == 1"""
         t = videos.size(1)
         
-        #print(f"🔍 cut_videos: {t} frames → ", end="")
-        
-        # CONTRAINTE CRITIQUE: Le modèle exige que le nombre de frames % 4 == 1
-        # Donc les valeurs valides sont: 1, 5, 9, 13, 17, 21, etc.
-        
-        # Vérifier si déjà dans le bon format
         if t % 4 == 1:
-            print(f"{t} frames ✅ (already 4n+1 format)")
             return videos
         
         # Calculer le prochain nombre valide (4n + 1)
-        target_frames = ((t // 4) + 1) * 4 + 1
-        padding_needed = target_frames - t
-        
-        print(f"{target_frames} frames (padding: +{padding_needed} for 4n+1 format)")
+        padding_needed = (4 - (t % 4)) % 4 + 1
         
         # Appliquer le padding pour atteindre la forme 4n+1
         last_frame = videos[:, -1:].expand(-1, padding_needed, -1, -1).contiguous()
         result = torch.cat([videos, last_frame], dim=1)
-        
-        # Vérification de sécurité
-        final_t = result.size(1)
-        assert final_t % 4 == 1, f"ERREUR: {final_t} % 4 = {final_t % 4} ≠ 1"
         
         return result
 
@@ -771,22 +791,48 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     #print("🔄 Loading text embeddings...")
     text_pos_embeds = torch.load(os.path.join(script_directory, 'pos_emb.pt')).to(device, dtype=compute_dtype)
     text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(device, dtype=compute_dtype)
-    
+    text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
     # Nettoyer après chargement
     #clear_vram_cache()
     reset_vram_peak()
-    runner.dit.to("cpu")
-    runner.vae.to(device)
+    #runner.dit.to(device)
+    #runner.vae.to(device)
+    step = batch_size - temporal_overlap
+    if step <= 0:
+        step = batch_size
+        temporal_overlap = 0
+
+    #print(f"🎬 Processing {len(images)} images with step={step}, overlap={temporal_overlap}")
     try:
-        for batch_idx in range(0, len(images), batch_size):
+        for batch_idx in range(0, len(images), step):
+            # 📊 Calcul des indices avec chevauchement
+            if batch_idx == 0:
+                # Premier batch: pas de chevauchement
+                start_idx = 0
+                end_idx = min(batch_size, len(images))
+                effective_batch_size = end_idx - start_idx
+                is_first_batch = True
+            else:
+                # Batches suivants: chevauchement temporal_overlap frames
+                start_idx = batch_idx 
+                end_idx = min(start_idx + batch_size, len(images))
+                effective_batch_size = end_idx - start_idx
+                is_first_batch = False
+                if effective_batch_size <= temporal_overlap:
+                    break  # Pas assez de nouvelles frames, arrêter
+
             tps_loop = time.time()
             t = time.time()
-            print(f"\n🔄 Processing batch {batch_idx//batch_size + 1}/{(len(images)-1)//batch_size + 1}")
+            batch_number = (batch_idx // step + 1) if step > 0 else 1
+            print(f"\n🎬 Batch {batch_number}: frames {start_idx}-{end_idx-1}")
+            #print(f"   {'Standard diffusion' if is_first_batch else f'Context-aware: {temporal_overlap} overlap + {effective_batch_size-temporal_overlap} new'}")
+        
+           
             # Reset pic VRAM pour ce batch
             
             #print(f"🔄 Reset VRAM time: {time.time() - t} seconds")
             #t = time.time()
-            video = images[batch_idx:batch_idx+batch_size]
+            video = images[start_idx:end_idx]
             #print(f"Video size: {video.size()}")
             
             # Utiliser le dtype de calcul adaptatif 
@@ -804,77 +850,72 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             print(f"📹 Sequence of {t} frames")
             #t = time.time()
             # Vérifier si déjà au format correct (4n + 1)
-            if t % 4 == 1:
-                #print("✅ Correct format (4n+1), skipping cut_videos")
-                cond_latents = [transformed_video]
-                input_video = [transformed_video.clone()]
+            #t = transformed_video.size(1)
+            print(f"🔄 Transformed video shape before cut: {transformed_video.shape}")
+            if len(images)>=5 and t % 4 != 1:
+                transformed_video = cut_videos(transformed_video)
+                print(f"🔄 Transformed video shape: {transformed_video.shape}")
+            # 🎯 STRATÉGIE TEMPORELLE CONTEXT-AWARE
+            if is_first_batch or temporal_overlap == 0:
+                # 🆕 PREMIER BATCH: Diffusion standard complète
+                tps_vae = time.time()
+                with torch.autocast("cuda", autocast_dtype, enabled=True):
+                    cond_latents = runner.vae_encode([transformed_video])
+                print(f"🔄 Cond latents shape: {cond_latents[0].shape}, time: {time.time() - tps_vae} seconds")
+                #text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
+                
+                # Génération normale
+                samples, previous_latents = generation_step(runner, text_embeds, preserve_vram, cond_latents=cond_latents, temporal_overlap=temporal_overlap)
+                    
             else:
-                # Nécessite cut_videos pour respecter la contrainte
-                #print(f"🔧 Padding needed for 4n+1 format")
-                cond_latents = [cut_videos(transformed_video)]
-                input_video = [transformed_video]
-            #print(f"🔄 Cut videos time: {time.time() - t} seconds")
-            #t = time.time()
-            # Nettoyer après transformation
-            #t = time.time()
-            #del video, transformed_video
-            #clear_vram_cache()
-            #print(f"🔄 Del video and transformed_video time: {time.time() - t} seconds")
-            # Encodage VAE avec optimisation mémoire
-            # print(f"🔄 Encodage VAE: {list(map(lambda x: x.size(), cond_latents))}")
-            #print(f"🔄 Encodage VAE time: {time.time() - t} seconds")
-            #t = time.time()
-            # OPTIMISATION: Vérifier la VRAM avant l'encodage VAE
-            # if not check_vram_safety("Encodage VAE", 3.0):
-                #print("🔄 Additional cleanup before VAE encoding...")
-            #    for _ in range(2):
-            #        clear_vram_cache()
-            #        time.sleep(0.1)
+                # 🔄 BATCHES SUIVANTS: Context-aware avec chevauchement
+                print(f"   🎯 Using context-aware inference...")
+                
+                # Construire la séquence avec chevauchement
+                # 1. Frames de chevauchement (du batch précédent)
+                #overlap_frames = transformed_video[:temporal_overlap]
+                
+                # 2. Nouvelles frames
+                #new_frames = transformed_video[temporal_overlap:]
+                
+                # 3. Créer les latents avec continuité
+                overlap_latents = previous_latents[0] # Dernières frames du batch précédent
+                print(f"🔄 Overlap latents shape: {overlap_latents.shape}")
+                
+                # Encoder seulement les nouvelles frames
+                with torch.autocast("cuda", autocast_dtype, enabled=True):
+                    new_latents = runner.vae_encode([transformed_video])
+                print(f"🔄 New frames shape: {new_latents[0].shape}")
+                # 4. Combiner les latents avec fondu dans l'espace latent
+                combined_latents = temporal_latent_blending(
+                    overlap_latents, 
+                    new_latents[0][:temporal_overlap] if new_latents[0].shape[0] >= temporal_overlap else new_latents[0],
+                    blend_frames=temporal_overlap
+                )
+                print(f"🔄 Combined latents shape: {combined_latents.shape}")
+                # 5. Latents finaux: chevauchement fondu + nouvelles frames
+                if new_latents[0].shape[0] > temporal_overlap:
+                    final_latents = torch.cat([combined_latents, new_latents[0][temporal_overlap:]], dim=0)
+                else:
+                    final_latents = combined_latents
+                print(f"🔄 Final latents shape: {final_latents.shape}")
+                cond_latents = [final_latents]
+                #text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
+                
+                # Génération context-aware
+                samples, previous_latents = generation_step(runner, text_embeds, preserve_vram, cond_latents=cond_latents, temporal_overlap=temporal_overlap)
+                
+                # Mettre à jour les latents pour le prochain batch
+                previous_latents = [final_latents]
             
-            #runner.dit.to("cpu")  # Libérer VRAM pour VAE
-            #clear_vram_cache()
-            #print(f"🔄 Clear VRAM time: {time.time() - t} seconds")
-            t = time.time()
-            #runner.vae.to(device, dtype=vae_dtype)
-            # Utiliser l'autocast adaptatif
-            with torch.autocast("cuda", autocast_dtype, enabled=True):
-                cond_latents = runner.vae_encode(cond_latents)
-            print(f"🔄 Encodage VAE time: {time.time() - t} seconds")
-            #runner.dit.to(device)
-            #runner.vae.to("cpu")
-            #t = time.time()
-            #runner.dit.to(device)  # Recharger DiT
-            #print(f"🔄 Recharger DiT time: {time.time() - t} seconds")
-            #t = time.time()
-            # Text embeddings (avec dtype adaptatif)
-            text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
-            #print(f"🔄 Text embeddings time: {time.time() - t} seconds")
-            
-            # OPTIMISATION: Vérification sécurité VRAM avant génération
-            #if not check_vram_safety("Génération DiT", 4.0):
-                #print("🔄 Emergency cleanup before generation...")
-            #    runner.vae.to("cpu")
-            #    for _ in range(3):
-            #        clear_vram_cache()
-            #        time.sleep(0.1)
-            #    runner.dit.to(device)
-            t = time.time()
-            samples = generation_step(runner, text_embeds, preserve_vram, cond_latents=cond_latents)
-            #print(f"🔄 Generation step time: {time.time() - t} seconds")
-            #t = time.time()
-            # Nettoyer immédiatement après génération
-            #runner.dit.to("cpu")
-            #del cond_latents, text_embeds
-            #clear_vram_cache()
-            #print(f"🔄 Clear VRAM time: {time.time() - t} seconds")
-            #t = time.time()
-            # Post-traitement sur CPU
-            sample = samples[0].to("cpu")
+            #sample = samples[0].to("cpu")
+            sample = samples[0]
             if ori_lengths[0] < sample.shape[0]:
                 sample = sample[:ori_lengths[0]]
-
+            if temporal_overlap>0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
+                sample = sample[temporal_overlap:]  # Supprimer les frames de chevauchement en sortie
             # 🚀 OPTIMISATION: Utiliser PyTorch natif au lieu de rearrange (2-5x plus rapide)
-            input_video[0] = optimized_single_video_rearrange(input_video[0]).to("cpu")
+            input_video = [optimized_single_video_rearrange(transformed_video)]
             #print(f"🔄 Optimized single video rearrange time: {time.time() - t} seconds")
             t = time.time()
             if use_colorfix:
@@ -886,53 +927,23 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             #print(f"🔄 Optimized sample format time: {time.time() - t} seconds")
             #t = time.time()     
             sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
+            sample = sample.to("cpu")
             batch_samples.append(sample)
-            #print(f"🔄 Batch samples time: {time.time() - t} seconds")
+            print(f"🔄 Batch samples time: {time.time() - t} seconds")
             #t = time.time()
             # Nettoyage ultra-agressif après chaque batch
             print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
-            del samples, sample, input_video
+            #input_video = input_video[0].to("cpu")
+            video = video.to("cpu")
+            del samples, sample, input_video, video, transformed_video
 
-            #print(f"🔄 Del samples, sample and input_video time: {time.time() - t} seconds")
-            # ÉTAPE 1: Forcer tous les modèles sur CPU
-            #print(f"🔄 Nettoyage ultra-agressif batch {batch_idx//batch_size + 1}...")
-            #runner.dit.to("cpu")
-            #runner.vae.to("cpu")
-            #print(f"🔄 Runner to CPU time: {time.time() - t} seconds")
-            #t = time.time()
-            # ÉTAPE 2: Nettoyer toutes les variables locales possibles
-            #if 'cond_latents' in locals():
-            #    del cond_latents
-            #if 'text_embeds' in locals():
-            #    del text_embeds
-            #print(f"🔄 Del cond_latents and text_embeds time: {time.time() - t} seconds")
-            #t = time.time()
-            # ÉTAPE 3: Nettoyage mémoire agressif multiple
-            #for _ in range(3):  # Triple nettoyage
-            #    clear_vram_cache()
-            #    if torch.cuda.is_available():
-            #        torch.cuda.empty_cache()
-            #        torch.cuda.synchronize()
-            #    gc.collect()
-            #    time.sleep(0.1)  # Petit délai pour laisser le temps au nettoyage
-            #print(f"🔄 Clear VRAM time: {time.time() - t} seconds")
-            #t = time.time()
-            # ÉTAPE 4: Recharger seulement si nécessaire pour le prochain batch
-            #if batch_idx + batch_size < len(images):
-                #print(f"🔄 Preparing next batch...")
-                # Attendre un peu avant de recharger
-                #time.sleep(0.5)
-                #runner.dit.to(device)  # Garder le dtype natif du modèle
-                # Garder VAE sur CPU jusqu'au besoin
-                #clear_vram_cache()
-            #print(f"🔄 Clear VRAM time: {time.time() - t} seconds")
+            
     finally:
         # Cleanup final des embeddings
         text_pos_embeds = text_pos_embeds.to("cpu")
         text_neg_embeds = text_neg_embeds.to("cpu")
-        images = images.to("cpu")
         
-        del text_pos_embeds, text_neg_embeds, images
+        del text_pos_embeds, text_neg_embeds
         clear_vram_cache()
     
     final_video_images = torch.cat(batch_samples, dim=0)
@@ -1726,10 +1737,11 @@ class SeedVR2:
                     "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
                 ], "seedvr2_ema_3b_fp16.safetensors"),
                 "seed": ("INT", {"default": 100, "min": 0, "max": 5000, "step": 1}),
-                "new_width": ("INT", {"default": 1280, "min": 1, "max": 2048, "step": 1}),
+                "new_width": ("INT", {"default": 1280, "min": 1, "max": 4320, "step": 1}),
                 "cfg_scale": ("FLOAT", {"default": 1, "min": 0.01, "max": 2.0, "step": 0.01}),
-                "batch_size": ("INT", {"default": 5, "min": 1, "max": 2048, "step": 1}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 2048, "step": 4}),
                 "preserve_vram": ("BOOLEAN", {"default": True})
+                
             },
         }
     RETURN_NAMES = ("image", )
@@ -1738,6 +1750,7 @@ class SeedVR2:
     CATEGORY = "SEEDVR2"
 
     def execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram):
+        temporal_overlap = 0
         t_tot = time.time()
         download_weight(model)
         #print(f"🔄 Download weight time: {time.time() - t_tot} seconds")
@@ -1748,7 +1761,7 @@ class SeedVR2:
         #vram_mode = preserve_vram
         
         try:
-            sample = generation_loop(runner, images, cfg_scale, seed, new_width, batch_size, preserve_vram, model)
+            sample = generation_loop(runner, images, cfg_scale, seed, new_width, batch_size, preserve_vram, temporal_overlap)
         finally:
             # Aggressive cleanup
             # Move models to CPU before deletion
@@ -1766,6 +1779,8 @@ class SeedVR2:
                 
             del runner
             _, _, peak = get_vram_usage()
+            images.to("cpu")
+            del images
             print(f"🔄 VRAM peak: {peak:.2f}GB peak")
             # Multiple cleanup passes
             gc.collect()
