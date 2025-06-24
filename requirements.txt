@@ -2,7 +2,6 @@ einops                   # Tensor operations
 omegaconf==2.3.0                # Configuration system.
 flash_attn
 diffusers               # Diffusers
-rotary-embedding-torch==0.5.3   # Rotary positional embedding
 torchvision             # Torchvision
 pytorch-extension #pytorch extension
 rotary_embedding_torch
