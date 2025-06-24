@@ -14,7 +14,7 @@
 
 import os
 import torch
-import mediapy
+#import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
 import numpy as np
