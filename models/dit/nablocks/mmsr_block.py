@@ -29,7 +29,7 @@ from ..modulation import ada_layer_type
 from ..normalization import norm_layer_type
 from ..rope import NaRotaryEmbedding3d
 from ..window import get_window_op
-
+from ....common.half_precision_fixes import safe_pad_operation
 
 class NaSwinAttention(MMWindowAttention):
     def __init__(
@@ -131,10 +131,10 @@ class NaSwinAttention(MMWindowAttention):
             k=concat_win(vid_k, txt_k).bfloat16(),
             v=concat_win(vid_v, txt_v).bfloat16(),
             cu_seqlens_q=cache_win(
-                "vid_seqlens_q", lambda: F.pad(all_len_win.cumsum(0), (1, 0)).int()
+                "vid_seqlens_q", lambda: safe_pad_operation(all_len_win.cumsum(0), (1, 0)).int()
             ),
             cu_seqlens_k=cache_win(
-                "vid_seqlens_k", lambda: F.pad(all_len_win.cumsum(0), (1, 0)).int()
+                "vid_seqlens_k", lambda: safe_pad_operation(all_len_win.cumsum(0), (1, 0)).int()
             ),
             max_seqlen_q=cache_win("vid_max_seqlen_q", lambda: all_len_win.max().item()),
             max_seqlen_k=cache_win("vid_max_seqlen_k", lambda: all_len_win.max().item()),

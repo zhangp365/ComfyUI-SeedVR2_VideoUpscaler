@@ -2,7 +2,7 @@ import torch
 from PIL import Image
 from torch import Tensor
 from torch.nn import functional as F
-
+from ...common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
 from torchvision.transforms import ToTensor, ToPILImage
 
 def adain_color_fix(target: Image, source: Image):
@@ -80,7 +80,7 @@ def wavelet_blur(image: Tensor, radius: int):
     kernel = kernel[None, None]
     # repeat the kernel across all input channels
     kernel = kernel.repeat(3, 1, 1, 1)
-    image = F.pad(image, (radius, radius, radius, radius), mode='replicate')
+    image = safe_pad_operation(image, (radius, radius, radius, radius), mode='replicate')
     # apply convolution
     output = F.conv2d(image, kernel, groups=3, dilation=radius)
     return output
@@ -111,7 +111,7 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
         target_shape = content_feat.shape
         if len(target_shape) >= 3:  # Au moins 3 dimensions
             # Utiliser interpolation pour ajuster les dimensions spatiales
-            style_feat = F.interpolate(
+            style_feat = safe_interpolate_operation(
                 style_feat, 
                 size=target_shape[-2:],  # Dernières 2 dimensions (H, W)
                 mode='bilinear', 
@@ -129,7 +129,7 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
     # Vérification finale avant addition
     if content_high_freq.shape != style_low_freq.shape:
         print(f"⚠️ Ajustement final nécessaire: {content_high_freq.shape} vs {style_low_freq.shape}")
-        style_low_freq = F.interpolate(
+        style_low_freq = safe_interpolate_operation(
             style_low_freq,
             size=content_high_freq.shape[-2:],
             mode='bilinear',

@@ -14,16 +14,10 @@
 
 import os
 import torch
-#import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
 import numpy as np
-#print(os.getcwd())
-import datetime
-import itertools
 import folder_paths
-from tqdm import tqdm
-#from models.dit import na
 import gc
 import time
 from huggingface_hub import snapshot_download, hf_hub_download
@@ -801,7 +795,9 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     if step <= 0:
         step = batch_size
         temporal_overlap = 0
-
+    t = time.time()
+    images = images.to("cpu")
+    print(f"🔄 Images to CPU time: {time.time() - t} seconds")
     #print(f"🎬 Processing {len(images)} images with step={step}, overlap={temporal_overlap}")
     try:
         for batch_idx in range(0, len(images), step):

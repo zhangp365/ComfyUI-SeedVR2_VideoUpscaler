@@ -25,6 +25,7 @@ from torch.nn import Conv3d
 from .context_parallel_lib import cache_send_recv, get_cache_size
 from .global_config import get_norm_limit
 from .types import MemoryState, _inflation_mode_t, _memory_device_t
+from ....common.half_precision_fixes import safe_pad_operation
 
 # Single GPU inference - no distributed processing needed
 #print("Warning: Using single GPU inference mode - distributed features disabled in causal_inflation_lib")
@@ -101,7 +102,7 @@ class InflatedCausalConv3d(Conv3d):
         if memory_occupy < self.memory_limit or split_dim == x.ndim:
             if prev_cache is not None:
                 x = torch.cat([prev_cache, x], dim=split_dim - 1)
-            x = F.pad(x, padding, mode='constant', value=0.0)
+            x = safe_pad_operation(x, padding, mode='constant', value=0.0)
             with ignore_padding(self):
                 return super().forward(x)
 
