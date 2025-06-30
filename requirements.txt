@@ -1,6 +1,5 @@
 einops                   # Tensor operations
 omegaconf==2.3.0                # Configuration system.
-flash_attn
 diffusers               # Diffusers
 torchvision             # Torchvision
 pytorch-extension #pytorch extension
