@@ -60,7 +60,7 @@ class SeedVR2:
                     "step": 1,
                     "tooltip": "Random seed for generation reproducibility"
                 }),
-                "new_width": ("INT", {
+                "new_resolution": ("INT", {
                     "default": 1280, 
                     "min": 1, 
                     "max": 4320, 
@@ -91,7 +91,7 @@ class SeedVR2:
     FUNCTION = "execute"
     CATEGORY = "SEEDVR2"
 
-    def execute(self, images: torch.Tensor, model: str, seed: int, new_width: int, 
+    def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
         cfg_scale: float, batch_size: int, preserve_vram: bool) -> Tuple[torch.Tensor]:
         """Execute SeedVR2 video upscaling"""
         
@@ -100,7 +100,7 @@ class SeedVR2:
         download_weight(model)
         debug = False
         try:
-            return self._internal_execute(images, model, seed, new_width, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug)
+            return self._internal_execute(images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug)
         except Exception as e:
             self.cleanup(force_ram_cleanup=True)
             raise e
@@ -165,7 +165,7 @@ class SeedVR2:
             fast_ram_cleanup()
 
 
-    def _internal_execute(self, images, model, seed, new_width, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug):
+    def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug):
         """Internal execution logic"""
         total_start_time = time.time()
         # Configure runner
@@ -181,7 +181,7 @@ class SeedVR2:
         
         # Execute generation
         sample = generation_loop(
-            self.runner, images, cfg_scale, seed, new_width, 
+            self.runner, images, cfg_scale, seed, new_resolution, 
             batch_size, preserve_vram, temporal_overlap, debug
         )
         print(f"✅ Video upscaling completed successfully!")
