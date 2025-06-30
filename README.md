@@ -18,7 +18,7 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - [📦 Installation](#-installation)
 - [📖 Usage](#-usage)
 - [📊 Benchmarks](#-benchmarks)
-- [🔧 Limitations](#-Limitations)
+- [⚠️ Limitations](#-Limitations)
 - [🤝 Contributing](#-contributing)
 - [🙏 Credits](#-credits)
 - [📄 License](#-license)
@@ -127,7 +127,6 @@ Of course, the output resolution also has an impact, so if your hardware doesn't
    - `model`: Select your 3B or 7B model
    - `seed`: a seed but it generate another seed from this one
    - `new_resolution`: New desired short edge in px, will keep ratio on other edge
-   - `cfg_scale`: usually 1.0, I don't think this could have a big impact, need to make more tests.
    - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1" without temporal consistency, "5" for temporal consistency, but higher is this value better is the result.
    - `preserve_vram`: for VRAM < 24GB, If true, It will unload unused models during process, longer but works, otherwise probably OOM with
 

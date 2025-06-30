@@ -67,13 +67,6 @@ class SeedVR2:
                     "step": 1,
                     "tooltip": "Target width for upscaled video"
                 }),
-                "cfg_scale": ("FLOAT", {
-                    "default": 1.0, 
-                    "min": 0.01, 
-                    "max": 2.0, 
-                    "step": 0.01,
-                    "tooltip": "Classifier-free guidance scale"
-                }),
                 "batch_size": ("INT", {
                     "default": 5, 
                     "min": 1, 
@@ -81,7 +74,7 @@ class SeedVR2:
                     "step": 4,
                     "tooltip": "Number of frames to process per batch (recommend 4n+1 format)"
                 }),
-                "preserve_vram": ("BOOLEAN", {"default": True})
+                "preserve_vram": ("BOOLEAN", {"default": False}),
             },
         }
     
@@ -92,13 +85,14 @@ class SeedVR2:
     CATEGORY = "SEEDVR2"
 
     def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
-        cfg_scale: float, batch_size: int, preserve_vram: bool) -> Tuple[torch.Tensor]:
+        batch_size: int, preserve_vram: bool) -> Tuple[torch.Tensor]:
         """Execute SeedVR2 video upscaling"""
         
         temporal_overlap = 0 
         print(f"🔄 Preparing model: {model}")
         download_weight(model)
         debug = False
+        cfg_scale = 1.0
         try:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug)
         except Exception as e:
