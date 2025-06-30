@@ -105,12 +105,19 @@ class NaMMSRTransformerBlock(nn.Module):
         }
 
         vid_attn, txt_attn = self.attn_norm(vid, txt)
+
         vid_attn, txt_attn = self.ada(vid_attn, txt_attn, layer="attn", mode="in", **ada_kwargs)
         vid_attn, txt_attn = self.attn(vid_attn, txt_attn, vid_shape, txt_shape, cache)
         vid_attn, txt_attn = self.ada(vid_attn, txt_attn, layer="attn", mode="out", **ada_kwargs)
         vid_attn, txt_attn = (vid_attn + vid), (txt_attn + txt)
 
         vid_mlp, txt_mlp = self.mlp_norm(vid_attn, txt_attn)
+        # ADD BY NUMZ
+        if vid_mlp.dtype != vid_attn.dtype:
+            vid_mlp = vid_mlp.to(vid_attn.dtype)
+        if txt_mlp.dtype != txt_attn.dtype:
+            txt_mlp = txt_mlp.to(txt_attn.dtype)
+        # END BY NUMZ
         vid_mlp, txt_mlp = self.ada(vid_mlp, txt_mlp, layer="mlp", mode="in", **ada_kwargs)
         vid_mlp, txt_mlp = self.mlp(vid_mlp, txt_mlp)
         vid_mlp, txt_mlp = self.ada(vid_mlp, txt_mlp, layer="mlp", mode="out", **ada_kwargs)

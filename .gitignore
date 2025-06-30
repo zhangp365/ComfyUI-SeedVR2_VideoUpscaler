@@ -17,3 +17,7 @@ run_*.py
 vram_diagnostic.py
 test_*.py
 VRAM_OPTIMIZATIONS_SUMMARY.md
+seedvr2.py
+src/core/isolated_generation.py
+src/core/subprocess_runner.py
+models/video_vae_v3_mine_bad/

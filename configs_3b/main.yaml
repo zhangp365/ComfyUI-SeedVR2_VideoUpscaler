@@ -4,6 +4,13 @@ __object__:
 
 dit:
   model:
+    __object__:
+      path:
+        - "custom_nodes.ComfyUI-SeedVR2_VideoUpscaler.models.dit_v2.nadit"
+        - "ComfyUI.custom_nodes.ComfyUI-SeedVR2_VideoUpscaler.models.dit_v2.nadit"
+        - "models.dit_v2.nadit"
+      name: "NaDiT"
+      args: "as_params"
     vid_in_channels: 33
     vid_out_channels: 16
     vid_dim: 2560
@@ -40,15 +47,22 @@ ema:
 
 vae:
   model:
+    __object__:
+      path:
+        - "custom_nodes.ComfyUI-SeedVR2_VideoUpscaler.models.video_vae_v3.modules.attn_video_vae"
+        - "ComfyUI.custom_nodes.ComfyUI-SeedVR2_VideoUpscaler.models.video_vae_v3.modules.attn_video_vae"
+        - "models.video_vae_v3.modules.attn_video_vae"
+      name: "VideoAutoencoderKLWrapper"
+      args: "as_params"
     freeze_encoder: False
-    gradient_checkpoint: True
+    gradient_checkpoint: True # Disabled to prevent VRAM leaks in inference
   slicing:
     split_size: 4
     memory_device: same
   memory_limit:
     conv_max_mem: 0.5
     norm_max_mem: 0.5
-  checkpoint: models/SEEDVR2/ema_vae_fp16.safetensors
+  checkpoint: ema_vae_fp16.safetensors
   scaling_factor: 0.9152
   compile: False
   grouping: False

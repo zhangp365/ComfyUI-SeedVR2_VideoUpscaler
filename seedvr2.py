@@ -34,7 +34,6 @@ except ImportError:
 
 from .data.image.transforms.divisible_crop import DivisibleCrop
 from .data.image.transforms.na_resize import NaResize
-from .data.video.transforms.rearrange import Rearrange
 script_directory = os.path.dirname(os.path.abspath(__file__))
 if os.path.exists(os.path.join(script_directory, "./projects/video_diffusion_sr/color_fix.py")):
     from .projects.video_diffusion_sr.color_fix import wavelet_reconstruction
@@ -591,12 +590,12 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     
     print(f"🔄 INFERENCE time: {time.time() - t} seconds")
     # Traitement des échantillons avec OPTIMISATION 🚀
-    t = time.time()
+    #t = time.time()
     samples = optimized_video_rearrange(video_tensors)
     last_latents = samples[-temporal_overlap:]
-    print(f"🔄 sample size: {len(samples)}")
-    print(f"🔄 Samples shape: {samples[0].shape}")
-    print(f"🚀 OPTIMIZED REARRANGE time: {time.time() - t} seconds")
+    #print(f"🔄 sample size: {len(samples)}")
+    #print(f"🔄 Samples shape: {samples[0].shape}")
+    #print(f"🚀 OPTIMIZED REARRANGE time: {time.time() - t} seconds")
     
     # Nettoyage agressif des tenseurs intermédiaires
     #del video_tensors, noises, aug_noises, cond_latents, conditions
@@ -857,6 +856,9 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 tps_vae = time.time()
                 with torch.autocast("cuda", autocast_dtype, enabled=True):
                     cond_latents = runner.vae_encode([transformed_video])
+                tps = time.time()
+                transformed_video = transformed_video.to("cpu")
+                print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
                 print(f"🔄 Cond latents shape: {cond_latents[0].shape}, time: {time.time() - tps_vae} seconds")
                 #text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
                 
@@ -911,13 +913,17 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             if temporal_overlap>0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
                 sample = sample[temporal_overlap:]  # Supprimer les frames de chevauchement en sortie
             # 🚀 OPTIMISATION: Utiliser PyTorch natif au lieu de rearrange (2-5x plus rapide)
+            tps = time.time()
+            transformed_video = transformed_video.to(device)
+            print(f"🔄 Transformed video to device time: {time.time() - tps} seconds")
+            tps = time.time()
             input_video = [optimized_single_video_rearrange(transformed_video)]
             #print(f"🔄 Optimized single video rearrange time: {time.time() - t} seconds")
-            t = time.time()
+            #t = time.time()
             if use_colorfix:
                 sample = wavelet_reconstruction(sample, input_video[0][: sample.size(0)])
-            print(f"🔄 Wavelet reconstruction time: {time.time() - t} seconds")
-            t = time.time()
+            #print(f"🔄 Wavelet reconstruction time: {time.time() - t} seconds")
+            #t = time.time()
             # 🚀 OPTIMISATION: Remplacer rearrange par fonction optimisée
             sample = optimized_sample_to_image_format(sample)
             #print(f"🔄 Optimized sample format time: {time.time() - t} seconds")
@@ -925,12 +931,16 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
             sample = sample.to("cpu")
             batch_samples.append(sample)
-            print(f"🔄 Batch samples time: {time.time() - t} seconds")
+            #print(f"🔄 Batch samples time: {time.time() - t} seconds")
             #t = time.time()
             # Nettoyage ultra-agressif après chaque batch
-            print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
+            
             #input_video = input_video[0].to("cpu")
+            tps = time.time()
             video = video.to("cpu")
+            transformed_video = transformed_video.to("cpu")
+            print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
+            print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
             del samples, sample, input_video, video, transformed_video
 
             
@@ -1071,12 +1081,12 @@ class FP8CompatibleDiT(torch.nn.Module):
                 #self._force_nadit_bfloat16()
             else:
                 print("🎯 Detected NaDiT 7B FP16")
-            self._force_nadit_bfloat16()
+                #self._force_nadit_bfloat16()
             
         elif self.is_fp8_model and is_nadit_v2_3b:
             # Pour NaDiT v2 3B FP8: Convertir TOUT le modèle en BFloat16
             print("🎯 Detected NaDiT v2 3B FP8 - Converting all parameters to BFloat16")
-            self._force_nadit_bfloat16()
+            #self._force_nadit_bfloat16()
         #else:
             # Pour les autres modèles (3B FP16, etc.): Forcer seulement RoPE en BFloat16
             #print("🎯 Standard model - Converting only RoPE to BFloat16")

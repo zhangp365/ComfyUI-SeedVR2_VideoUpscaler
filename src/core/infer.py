@@ -19,26 +19,29 @@ import gc
 from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
+from src.optimization.memory_manager import clear_vram_cache
+from models.video_vae_v3.modules.types import MemoryState
 
-from ...common.config import create_object
-from ...common.decorators import log_on_entry, log_runtime
-from ...common.diffusion import (
+from common.config import create_object
+from common.decorators import log_on_entry, log_runtime
+from common.diffusion import (
     classifier_free_guidance_dispatcher,
     create_sampler_from_config,
     create_sampling_timesteps_from_config,
     create_schedule_from_config,
 )
-from ...common.distributed import (
+from common.distributed import (
     get_device,
     get_global_rank,
 )
 
-from ...common.distributed.meta_init_utils import (
+from common.distributed.meta_init_utils import (
     meta_non_persistent_buffer_init_fn,
 )
 # from common.fs import download
 
-from ...models.dit_v2 import na
+from models.dit_v2 import na
+
 
 def optimized_channels_to_last(tensor):
     """🚀 Optimized replacement for rearrange(tensor, 'b c ... -> b ... c')
@@ -73,10 +76,9 @@ def optimized_channels_to_second(tensor):
         return tensor.permute(*dims)
 
 class VideoDiffusionInfer():
-    def __init__(self, config: DictConfig):
-        # print(config)
+    def __init__(self, config: DictConfig, debug: bool = False):
         self.config = config
-
+        self.debug = debug
     def get_condition(self, latent: Tensor, latent_blur: Tensor, task: str) -> Tensor:
         t, h, w, c = latent.shape
         cond = torch.zeros([t, h, w, c + 1], device=latent.device, dtype=latent.dtype)
@@ -102,7 +104,7 @@ class VideoDiffusionInfer():
             cond[:, ..., -1:] = 1.0
             return cond
         raise NotImplementedError
-
+    '''
     @log_on_entry
     @log_runtime
     def configure_dit_model(self, device="cpu", checkpoint=None):
@@ -154,7 +156,7 @@ class VideoDiffusionInfer():
             self.vae.set_causal_slicing(**self.config.vae.slicing)
 
     # ------------------------------ Diffusion ------------------------------ #
-
+    '''
     def configure_diffusion(self):
         self.schedule = create_schedule_from_config(
             config=self.config.diffusion.schedule,
@@ -174,7 +176,7 @@ class VideoDiffusionInfer():
     # -------------------------------- Helper ------------------------------- #
 
     @torch.no_grad()
-    def vae_encode(self, samples: List[Tensor]) -> List[Tensor]:
+    def vae_encode(self, samples: List[Tensor], preserve_vram: bool = False) -> List[Tensor]:
         use_sample = self.config.vae.get("use_sample", True)
         latents = []
         if len(samples) > 0:
@@ -201,6 +203,7 @@ class VideoDiffusionInfer():
                     sample = self.vae.preprocess(sample)
                 if use_sample:
                     latent = self.vae.encode(sample).latent
+                    #latent = self.vae.encode(sample, preserve_vram).latent
                 else:
                     # Deterministic vae encode, only used for i2v inference (optionally)
                     latent = self.vae.encode(sample).posterior.mode().squeeze(2)
@@ -217,9 +220,10 @@ class VideoDiffusionInfer():
                 latents = [latent.squeeze(0) for latent in latents]
 
         return latents
+    
 
     @torch.no_grad()
-    def vae_decode(self, latents: List[Tensor], target_dtype: torch.dtype = None) -> List[Tensor]:
+    def vae_decode(self, latents: List[Tensor], target_dtype: torch.dtype = None, preserve_vram: bool = False) -> List[Tensor]:
         """🚀 VAE decode optimisé - décodage direct sans chunking, compatible avec autocast externe"""
         samples = []
         if len(latents) > 0:
@@ -234,11 +238,15 @@ class VideoDiffusionInfer():
             if isinstance(shift, ListConfig):
                 shift = torch.tensor(shift, device=device, dtype=dtype)
 
+
             # 🚀 OPTIMISATION 1: Group latents intelligemment pour batch processing
             if self.config.vae.grouping:
                 latents, indices = na.pack(latents)
             else:
                 latents = [latent.unsqueeze(0) for latent in latents]
+
+            if self.debug:
+                print(f"🔄 shape of latents: {latents[0].shape}")
             #print(f"🔄 GROUPING time: {time.time() - t} seconds")
             t = time.time()
             # 🚀 OPTIMISATION 2: Traitement batch optimisé avec dtype adaptatif
@@ -253,8 +261,9 @@ class VideoDiffusionInfer():
                 latent = latent.squeeze(2)
                 
                 # 🚀 OPTIMISATION 3: Décodage direct SANS autocast (utilise l'autocast externe)
-                with torch.autocast("cuda", torch.float16, enabled=True):
-                        sample = self.vae.decode(latent).sample
+                #with torch.autocast("cuda", torch.float16, enabled=True):
+                sample = self.vae.decode(latent, preserve_vram).sample
+                #sample = self.vae.decode(latent).sample
                 #sample = self.vae.decode(latent).sample
                 
                 # 🚀 OPTIMISATION 4: Post-processing conditionnel
@@ -264,9 +273,11 @@ class VideoDiffusionInfer():
                 samples.append(sample)
                 
                 # 🚀 OPTIMISATION 5: Nettoyage sélectif
-                if i % 2 == 0 or i == len(latents) - 1:
-                    torch.cuda.empty_cache()
-            print(f"🔄 DECODE time: {time.time() - t} seconds")
+                #if i % 2 == 0 or i == len(latents) - 1:
+                    #torch.cuda.empty_cache()
+            
+            if self.debug:
+                print(f"🔄 DECODE time: {time.time() - t} seconds")
             #t = time.time()
             # Ungroup back to individual sample with the original order.
             if self.config.vae.grouping:
@@ -329,13 +340,6 @@ class VideoDiffusionInfer():
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 
-    def clear_vram_cache(self):
-        """Nettoyer le cache VRAM"""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            import gc
-            gc.collect()
-
     @torch.no_grad()
     def inference(
         self,
@@ -344,7 +348,7 @@ class VideoDiffusionInfer():
         texts_pos: Union[List[str], List[Tensor], List[Tuple[Tensor]]],
         texts_neg: Union[List[str], List[Tensor], List[Tuple[Tensor]]],
         cfg_scale: Optional[float] = None,
-        dit_offload: bool = False,
+        preserve_vram: bool = False,
         temporal_overlap: int = 0,
     ) -> List[Tensor]:
         assert len(noises) == len(conditions) == len(texts_pos) == len(texts_neg)
@@ -363,19 +367,21 @@ class VideoDiffusionInfer():
 
         # 🚀 OPTIMISATION: Détecter le dtype du modèle pour performance optimale
         model_dtype = next(self.dit.parameters()).dtype
-        
+        if self.debug:
+            print(f"🎯 model_dtype: {model_dtype}")
         # Adapter les dtypes selon le modèle
         if model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             # FP8 natif: utiliser BFloat16 pour les calculs intermédiaires (compatible)
-            target_dtype = torch.bfloat16
+            target_dtype = torch.float16
             #print(f"🚀 FP8 model detected: using BFloat16 for intermediate calculations")
         elif model_dtype == torch.float16:
-            target_dtype = torch.float16
+            target_dtype = torch.bfloat16
             #print(f"🎯 FP16 model: using FP16 pipeline")
         else:
             target_dtype = torch.bfloat16
             #print(f"🎯 BFloat16 model: using BFloat16 pipeline")
-
+        if self.debug:
+            print(f"🎯 target_dtype: {target_dtype}")
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
         if isinstance(texts_pos[0], str):
@@ -410,17 +416,20 @@ class VideoDiffusionInfer():
         latents = latents.to(target_dtype) if latents.dtype != target_dtype else latents
         latents_cond = latents_cond.to(target_dtype) if latents_cond.dtype != target_dtype else latents_cond
 
-        # Enter eval mode.
-        # was_training = self.dit.training
-        # self.dit.eval()
+        
+        if preserve_vram:
+            if conditions[0].shape[0] > 1:
+                t = time.time()
+                self.vae = self.vae.to("cpu")
+                if self.debug:
+                    print(f"🔄 VAE to CPU time: {time.time() - t} seconds")
+            t = time.time()
+            self.dit = self.dit.to(get_device())
+            if self.debug:
+                print(f"🔄 Dit to GPU time: {time.time() - t} seconds")
 
-
-        # Sampling avec optimisations VRAM et autocast adaptatif
-        # print(f"🔄 Starting EulerSampler sampling...")
         t = time.time()
-        self.dit.to(get_device())
-        print(f"🔄 Dit to GPU time: {time.time() - t} seconds")
-        t = time.time()
+        
         with torch.autocast("cuda", target_dtype, enabled=True):
             latents = self.sampler.sample(
                 x=latents,
@@ -448,47 +457,43 @@ class VideoDiffusionInfer():
                     rescale=self.config.diffusion.cfg.rescale,
                 ),
             )
-        print(f"🔄 INFERENCE time: {time.time() - t} seconds")
-        t = time.time()
         
-        if dit_offload:
-            self.dit.to("cpu")
-            print(f"🔄 Dit to CPU time: {time.time() - t} seconds")
+        if self.debug:
+            print(f"🔄 INFERENCE time: {time.time() - t} seconds")
 
-        # Exit eval mode.
-        #self.dit.train(was_training)
-        
-        # 🚀 PIPELINE OPTIMISÉ: Réduire les transferts et nettoyages
-        t = time.time()
-        # Unflatten.
         latents = na.unflatten(latents, latents_shapes)
-        print(f"🔄 UNFLATTEN time: {time.time() - t} seconds")
-        
-        # 🚀 OPTIMISATION: Préparer VAE en parallèle si pas d'offloading
-        #if not dit_offload:
-            #t = time.time()
-            #self.vae.to(get_device())
-            #print(f"🔄 VAE to GPU time: {time.time() - t} seconds")
-        #else:
-            #t = time.time()
-            #if dit_offload:
-                #self.dit.to(get_device())
-            #print(f"🔄 DIT to GPU time: {time.time() - t} seconds")
-            #t = time.time()
-            #self.vae.to(get_device())
-            #print(f"🔄 VAE to GPU time: {time.time() - t} seconds")
-        
-        # 🚀 VAE decode optimisé ULTRA-RAPIDE - Élimination des transferts coûteux
-        #t = time.time()
+        #print(f"🔄 UNFLATTEN time: {time.time() - t} seconds")
         
         # 🎯 Pré-calcul des dtypes (une seule fois)
         vae_dtype = getattr(torch, self.config.vae.dtype)
         decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
+        if self.debug:
+            print(f"🎯 decode_dtype: {decode_dtype}")
+        if preserve_vram:
+            t = time.time()
+            self.dit = self.dit.to("cpu")
+            latents_cond = latents_cond.to("cpu")
+            latents_shapes = latents_shapes.to("cpu")
+            if latents[0].shape[0] > 1:
+                clear_vram_cache()
+            if self.debug:
+                print(f"🔄 Dit to CPU time: {time.time() - t} seconds")
+            
+            if latents[0].shape[0] > 1:
+                t = time.time()
+                self.vae = self.vae.to(get_device())
+                
+                if self.debug:
+                    print(f"🔄 VAE to GPU time: {time.time() - t} seconds")
+
+
+
+
+        #with torch.autocast("cuda", decode_dtype, enabled=True):
+        samples = self.vae_decode(latents, target_dtype=decode_dtype, preserve_vram=preserve_vram)
         
-        
-        with torch.autocast("cuda", decode_dtype, enabled=True):
-            samples = self.vae_decode(latents, target_dtype=decode_dtype)
-        print(f"🔄 Samples shape: {samples[0].shape}")
+        if self.debug:
+            print(f"🔄 Samples shape: {samples[0].shape}")
         #print(f"🔄  ULTRA-FAST VAE DECODE time: {time.time() - t} seconds")
         #t = time.time()
         #self.dit.to(get_device())
@@ -497,7 +502,8 @@ class VideoDiffusionInfer():
         #t = time.time()
         # 🚀 CORRECTION CRITIQUE: Conversion batch Float16 pour ComfyUI (plus rapide)
         if samples and len(samples) > 0 and samples[0].dtype != torch.float16:
-            print(f"🔧 Converting {len(samples)} samples from {samples[0].dtype} to Float16")
+            if self.debug:
+                print(f"🔧 Converting {len(samples)} samples from {samples[0].dtype} to Float16")
             samples = [sample.to(torch.float16, non_blocking=True) for sample in samples]
         
         #print(f"🚀 Conversion batch Float16 time: {time.time() - t} seconds")

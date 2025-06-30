@@ -19,6 +19,7 @@ from flash_attn import flash_attn_varlen_func
 
 from torch import nn
 
+
 class TorchAttention(nn.Module):
     def tflops(self, args, kwargs, output) -> float:
         assert len(args) == 0 or len(args) > 2, "query, key should both provided by args / kwargs"
@@ -44,3 +45,4 @@ class FlashAttentionVarlen(nn.Module):
     def forward(self, *args, **kwargs):
         kwargs["deterministic"] = torch.are_deterministic_algorithms_enabled()
         return flash_attn_varlen_func(*args, **kwargs)
+

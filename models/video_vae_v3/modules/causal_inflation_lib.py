@@ -14,6 +14,7 @@
 
 import math
 from contextlib import contextmanager
+import time
 from typing import List, Optional, Union
 import torch
 import torch.nn.functional as F
@@ -86,6 +87,7 @@ class InflatedCausalConv3d(Conv3d):
         split_dim=3,
         padding=(0, 0, 0, 0, 0, 0),
         prev_cache=None,
+        preserve_vram = False,
     ):
         # Compatible with no limit.
         if math.isinf(self.memory_limit):
@@ -117,7 +119,8 @@ class InflatedCausalConv3d(Conv3d):
         x = list(x.split(split_sizes, dim=split_dim))
         if prev_cache is not None:
             prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
-
+        if preserve_vram:
+            torch.cuda.empty_cache()
         # Loop Fwd.
         cache = None
         for idx in range(len(x)):
@@ -155,17 +158,31 @@ class InflatedCausalConv3d(Conv3d):
                 split_dim=split_dim + 1,
                 padding=padding,
                 prev_cache=cache,
+                preserve_vram=preserve_vram
             )
 
             # Update cache.
             cache = next_cache
 
-        return torch.cat(x, split_dim)
+        # ADD BY NUMZ
+        if preserve_vram:
+            torch.cuda.empty_cache()
+            #print("empty cache 1")
+            #time.sleep(2)
+        try:
+            output = torch.cat(x, split_dim)
+        except Exception as e:
+            print("OOM second chance")
+            torch.cuda.empty_cache()
+            time.sleep(2)
+            output = torch.cat(x, split_dim)
+        return output
 
     def forward(
         self,
         input: Union[Tensor, List[Tensor]],
         memory_state: MemoryState = MemoryState.UNSET,
+        preserve_vram: bool = False,
     ) -> Tensor:
         assert memory_state != MemoryState.UNSET
         if memory_state != MemoryState.ACTIVE:
@@ -176,7 +193,7 @@ class InflatedCausalConv3d(Conv3d):
             and get_sequence_parallel_group() is None
         ):
             return self.basic_forward(input, memory_state)
-        return self.slicing_forward(input, memory_state)
+        return self.slicing_forward(input, memory_state, preserve_vram)
 
     def basic_forward(self, input: Tensor, memory_state: MemoryState = MemoryState.UNSET):
         mem_size = self.stride[0] - self.kernel_size[0]
@@ -203,6 +220,7 @@ class InflatedCausalConv3d(Conv3d):
         self,
         input: Union[Tensor, List[Tensor]],
         memory_state: MemoryState = MemoryState.UNSET,
+        preserve_vram: bool = False,
     ) -> Tensor:
         squeeze_out = False
         if torch.is_tensor(input):
@@ -249,6 +267,7 @@ class InflatedCausalConv3d(Conv3d):
                 input[i],
                 padding=padding,
                 prev_cache=cache,
+                preserve_vram=preserve_vram
             )
 
             # Update cache.
@@ -303,7 +322,7 @@ def init_causal_conv3d(
     return InflatedCausalConv3d(*args, inflation_mode=inflation_mode, **kwargs)
 
 
-def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: bool = False) -> torch.Tensor:
     input_dtype = x.dtype
     if isinstance(norm_layer, (nn.LayerNorm, RMSNorm)):
         if x.ndim == 4:
@@ -332,9 +351,25 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
                 weights = norm_layer.weight.chunk(num_chunks, dim=0)
                 biases = norm_layer.bias.chunk(num_chunks, dim=0)
                 for i, (w, b) in enumerate(zip(weights, biases)):
-                    x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
+                    try:
+                        x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
+                    except Exception as e:
+                        print("OOM Second Chance : Group Norm")
+                        torch.cuda.empty_cache()
+                        time.sleep(2)
+                        x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     x[i] = x[i].to(input_dtype)
-                x = torch.cat(x, dim=1)
+                # ADD BY NUMZ
+                if preserve_vram:
+                    torch.cuda.empty_cache()
+                # ADD BY NUMZ
+                try:
+                    x = torch.cat(x, dim=1)
+                except Exception as e:
+                    print("OOM Second Chance : Cat")
+                    torch.cuda.empty_cache()
+                    time.sleep(2)
+                    x = torch.cat(x, dim=1)
             else:
                 x = norm_layer(x)
             x = rearrange(x, "(b t) c h w -> b c t h w", t=t)

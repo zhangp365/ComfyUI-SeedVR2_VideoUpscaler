@@ -11,6 +11,7 @@
 
 
 from contextlib import nullcontext
+import time
 from typing import Literal, Optional, Tuple, Union
 import diffusers
 import torch
@@ -112,6 +113,7 @@ class Upsample3D(Upsample2D):
         hidden_states: torch.FloatTensor,
         output_size: Optional[int] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
         **kwargs,
     ) -> torch.FloatTensor:
         assert hidden_states.shape[1] == self.channels
@@ -130,7 +132,9 @@ class Upsample3D(Upsample2D):
             )
         else:
             hidden_states = [hidden_states]
-
+        # ADD BY NUMZ
+        if preserve_vram:
+            torch.cuda.empty_cache()
         for i in range(len(hidden_states)):
             hidden_states[i] = self.upscale_conv(hidden_states[i])
             hidden_states[i] = rearrange(
@@ -147,10 +151,12 @@ class Upsample3D(Upsample2D):
 
         if not self.slicing:
             hidden_states = hidden_states[0]
-
+        # ADD BY NUMZ
+        if preserve_vram:
+            torch.cuda.empty_cache()
         if self.use_conv:
             if self.name == "conv":
-                hidden_states = self.conv(hidden_states, memory_state=memory_state)
+                hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
             else:
                 hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
 
@@ -294,13 +300,19 @@ class ResnetBlock3D(ResnetBlock2D):
             )
 
     def forward(
-        self, input_tensor, temb, memory_state: MemoryState = MemoryState.DISABLED, **kwargs
+        self, input_tensor, temb, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False, **kwargs
     ):
         hidden_states = input_tensor
 
-        hidden_states = causal_norm_wrapper(self.norm1, hidden_states)
-
-        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = causal_norm_wrapper(self.norm1, hidden_states, preserve_vram=preserve_vram)
+        # ADD BY NUMZ
+        try:
+            hidden_states = self.nonlinearity(hidden_states)
+        except Exception as e:
+            print("OOM second chance")
+            torch.cuda.empty_cache()
+            time.sleep(1)
+            hidden_states = self.nonlinearity(hidden_states)
 
         if self.upsample is not None:
             # upsample_nearest_nhwc fails with large batch sizes.
@@ -314,7 +326,7 @@ class ResnetBlock3D(ResnetBlock2D):
             input_tensor = self.downsample(input_tensor, memory_state=memory_state)
             hidden_states = self.downsample(hidden_states, memory_state=memory_state)
 
-        hidden_states = self.conv1(hidden_states, memory_state=memory_state)
+        hidden_states = self.conv1(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
 
         if self.time_emb_proj is not None:
             if not self.skip_time_act:
@@ -333,10 +345,10 @@ class ResnetBlock3D(ResnetBlock2D):
         hidden_states = self.nonlinearity(hidden_states)
 
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.conv2(hidden_states, memory_state=memory_state)
+        hidden_states = self.conv2(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
 
         if self.conv_shortcut is not None:
-            input_tensor = self.conv_shortcut(input_tensor, memory_state=memory_state)
+            input_tensor = self.conv_shortcut(input_tensor, memory_state=memory_state, preserve_vram=preserve_vram)
 
         output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
 
@@ -529,14 +541,15 @@ class UpDecoderBlock3D(UpDecoderBlock2D):
         hidden_states: torch.FloatTensor,
         temb: Optional[torch.FloatTensor] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
     ) -> torch.FloatTensor:
         for resnet, temporal in zip(self.resnets, self.temporal_modules):
-            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state)
+            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state, preserve_vram=preserve_vram)
             hidden_states = temporal(hidden_states)
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states, memory_state=memory_state)
+                hidden_states = upsampler(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
 
         return hidden_states
 
@@ -791,9 +804,10 @@ class Encoder3D(nn.Module):
         sample: torch.FloatTensor,
         extra_cond=None,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
     ) -> torch.FloatTensor:
         r"""The forward method of the `Encoder` class."""
-        sample = self.conv_in(sample, memory_state=memory_state)
+        sample = self.conv_in(sample, memory_state=memory_state, preserve_vram=preserve_vram)
         if self.training and self.gradient_checkpointing:
 
             def create_custom_forward(module):
@@ -966,12 +980,14 @@ class Decoder3D(nn.Module):
         sample: torch.FloatTensor,
         latent_embeds: Optional[torch.FloatTensor] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
     ) -> torch.FloatTensor:
         r"""The forward method of the `Decoder` class."""
 
         sample = self.conv_in(sample, memory_state=memory_state)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
+        #upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
+        upscale_dtype = sample.dtype
         if self.training and self.gradient_checkpointing:
 
             def create_custom_forward(module):
@@ -1010,7 +1026,7 @@ class Decoder3D(nn.Module):
 
             # up
             for up_block in self.up_blocks:
-                sample = up_block(sample, latent_embeds, memory_state=memory_state)
+                sample = up_block(sample, latent_embeds, memory_state=memory_state, preserve_vram=preserve_vram)
 
         # post-process
         sample = causal_norm_wrapper(self.conv_norm_out, sample)
@@ -1164,8 +1180,8 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             self.decoder.mid_block.attentions = torch.nn.ModuleList([None])
 
     @apply_forward_hook
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True) -> AutoencoderKLOutput:
-        h = self.slicing_encode(x)
+    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False) -> AutoencoderKLOutput:
+        h = self.slicing_encode(x, preserve_vram=preserve_vram)
         posterior = DiagonalGaussianDistribution(h)
 
         if not return_dict:
@@ -1175,9 +1191,9 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
 
     @apply_forward_hook
     def decode(
-        self, z: torch.Tensor, return_dict: bool = True
+        self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True
     ) -> Union[DecoderOutput, torch.Tensor]:
-        decoded = self.slicing_decode(z)
+        decoded = self.slicing_decode(z, preserve_vram=preserve_vram)
 
         if not return_dict:
             return (decoded,)
@@ -1185,11 +1201,11 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         return DecoderOutput(sample=decoded)
 
     def _encode(
-        self, x: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED
+        self, x: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False
     ) -> torch.Tensor:
         _x = x.to(self.device)
         _x = causal_conv_slice_inputs(_x, self.slicing_sample_min_size, memory_state=memory_state)
-        h = self.encoder(_x, memory_state=memory_state)
+        h = self.encoder(_x, memory_state=memory_state, preserve_vram=preserve_vram)
         if self.quant_conv is not None:
             output = self.quant_conv(h, memory_state=memory_state)
         else:
@@ -1198,17 +1214,17 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         return output.to(x.device)
 
     def _decode(
-        self, z: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED
+        self, z: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False
     ) -> torch.Tensor:
         _z = z.to(self.device)
         _z = causal_conv_slice_inputs(_z, self.slicing_latent_min_size, memory_state=memory_state)
         if self.post_quant_conv is not None:
             _z = self.post_quant_conv(_z, memory_state=memory_state)
-        output = self.decoder(_z, memory_state=memory_state)
+        output = self.decoder(_z, memory_state=memory_state, preserve_vram=preserve_vram)
         output = causal_conv_gather_outputs(output)
         return output.to(z.device)
 
-    def slicing_encode(self, x: torch.Tensor) -> torch.Tensor:
+    def slicing_encode(self, x: torch.Tensor, preserve_vram: bool = False) -> torch.Tensor:
         sp_size = get_sequence_parallel_world_size()
         if self.use_slicing and (x.shape[2] - 1) > self.slicing_sample_min_size * sp_size:
             x_slices = x[:, :, 1:].split(split_size=self.slicing_sample_min_size * sp_size, dim=2)
@@ -1216,17 +1232,18 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 self._encode(
                     torch.cat((x[:, :, :1], x_slices[0]), dim=2),
                     memory_state=MemoryState.INITIALIZING,
+                    preserve_vram=preserve_vram
                 )
             ]
             for x_idx in range(1, len(x_slices)):
                 encoded_slices.append(
-                    self._encode(x_slices[x_idx], memory_state=MemoryState.ACTIVE)
+                    self._encode(x_slices[x_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
                 )
             return torch.cat(encoded_slices, dim=2)
         else:
-            return self._encode(x)
+            return self._encode(x, preserve_vram=preserve_vram)
 
-    def slicing_decode(self, z: torch.Tensor) -> torch.Tensor:
+    def slicing_decode(self, z: torch.Tensor, preserve_vram: bool = False) -> torch.Tensor:
         sp_size = get_sequence_parallel_world_size()
         if self.use_slicing and (z.shape[2] - 1) > self.slicing_latent_min_size * sp_size:
             z_slices = z[:, :, 1:].split(split_size=self.slicing_latent_min_size * sp_size, dim=2)
@@ -1234,15 +1251,16 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 self._decode(
                     torch.cat((z[:, :, :1], z_slices[0]), dim=2),
                     memory_state=MemoryState.INITIALIZING,
+                    preserve_vram=preserve_vram
                 )
             ]
             for z_idx in range(1, len(z_slices)):
                 decoded_slices.append(
-                    self._decode(z_slices[z_idx], memory_state=MemoryState.ACTIVE)
+                    self._decode(z_slices[z_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
                 )
             return torch.cat(decoded_slices, dim=2)
         else:
-            return self._decode(z)
+            return self._decode(z, preserve_vram=preserve_vram)
 
     def tiled_encode(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         raise NotImplementedError
@@ -1298,17 +1316,17 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         x = self.decode(z).sample
         return CausalAutoencoderOutput(x, z, p)
 
-    def encode(self, x: torch.FloatTensor) -> CausalEncoderOutput:
+    def encode(self, x: torch.FloatTensor, preserve_vram: bool = False) -> CausalEncoderOutput:
         if x.ndim == 4:
             x = x.unsqueeze(2)
-        p = super().encode(x).latent_dist
+        p = super().encode(x, preserve_vram=preserve_vram).latent_dist
         z = p.sample().squeeze(2)
         return CausalEncoderOutput(z, p)
 
-    def decode(self, z: torch.FloatTensor) -> CausalDecoderOutput:
+    def decode(self, z: torch.FloatTensor, preserve_vram: bool = False) -> CausalDecoderOutput:
         if z.ndim == 4:
             z = z.unsqueeze(2)
-        x = super().decode(z).sample.squeeze(2)
+        x = super().decode(z, preserve_vram).sample.squeeze(2)
         return CausalDecoderOutput(x)
 
     def preprocess(self, x: torch.Tensor):

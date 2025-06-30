@@ -2,7 +2,7 @@ import torch
 from PIL import Image
 from torch import Tensor
 from torch.nn import functional as F
-from ...common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
+from common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
 from torchvision.transforms import ToTensor, ToPILImage
 
 def adain_color_fix(target: Image, source: Image):
@@ -98,6 +98,8 @@ def wavelet_decomposition(image: Tensor, levels=5):
         image = low_freq
 
     return high_freq, low_freq
+
+
 
 def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
     """
