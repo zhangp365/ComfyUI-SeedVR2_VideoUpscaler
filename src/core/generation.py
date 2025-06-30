@@ -169,7 +169,7 @@ def cut_videos(videos):
     return result
 
 
-def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, preserve_vram=False, temporal_overlap=0, debug=False):
+def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, preserve_vram=False, temporal_overlap=0, debug=False, progress_callback=None):
     """
     Main generation loop with context-aware temporal processing
     
@@ -182,6 +182,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         batch_size (int): Batch size for processing
         preserve_vram (str/bool): VRAM preservation mode
         temporal_overlap (int): Frames for temporal continuity
+        progress_callback (callable): Optional callback for progress reporting
         
     Returns:
         torch.Tensor: Generated video frames
@@ -192,9 +193,11 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         - Memory-optimized batch processing
         - Advanced video transformation pipeline
         - Intelligent VRAM management throughout process
+        - Real-time progress reporting
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
+   
     # Adaptive model dtype detection for maximum performance
     model_dtype = None
     try:
@@ -277,6 +280,9 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         step = batch_size
         temporal_overlap = 0
     
+    # Calculate total batches for progress reporting
+    total_batches = len(range(0, len(images), step))
+    
     # Move images to CPU for memory efficiency
     #t = time.time()
     #images = images.to("cpu")
@@ -284,7 +290,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     
     try:
         # Main processing loop with context awareness
-        for batch_idx in range(0, len(images), step):
+        for batch_count, batch_idx in enumerate(range(0, len(images), step)):
             # Calculate batch indices with overlap
             comfy.model_management.throw_exception_if_processing_interrupted()
             if batch_idx == 0:
@@ -304,7 +310,12 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
 
             tps_loop = time.time()
             batch_number = (batch_idx // step + 1) if step > 0 else 1
+            current_frames = end_idx - start_idx
             print(f"\n🎬 Batch {batch_number}: frames {start_idx}-{end_idx-1}")
+            
+            # Progress callback - batch start
+            if progress_callback:
+                progress_callback(batch_count, total_batches, current_frames, "Processing batch...")
             
             # Process current batch
             video = images[start_idx:end_idx]
@@ -360,18 +371,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             # Post-process samples
             sample = samples[0]
             del samples 
-            # 🔧 DIAGNOSTIC: Vérifier les valeurs après generation_step
-            '''
-            if debug:
-                print(f"🔍 DIAGNOSTIC - Après generation_step:")
-                print(f"  📊 Sample shape: {sample.shape}")
-                print(f"  📊 Sample dtype: {sample.dtype}")
-                print(f"  📊 Sample device: {sample.device}")
-                print(f"  📊 Sample range: [{sample.min():.6f}, {sample.max():.6f}]")
-                print(f"  📊 Sample mean: {sample.mean():.6f}")
-                print(f"  📊 Sample std: {sample.std():.6f}")
-                print(f"  📊 Non-zero count: {(sample != 0).sum()}/{sample.numel()}")
-            '''
             #del samples
             if ori_lengths[0] < sample.shape[0]:
                 sample = sample[:ori_lengths[0]]
@@ -390,33 +389,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             #del transformed_video
             sample = wavelet_reconstruction(sample, input_video[0][:sample.size(0)])
             del input_video
-            '''
-            if debug:
-                # 🔧 DIAGNOSTIC: Vérifier les valeurs après wavelet_reconstruction
-                print(f"🔍 DIAGNOSTIC - Après wavelet_reconstruction:")
-                print(f"  📊 Sample range: [{sample.min():.6f}, {sample.max():.6f}]")
-                print(f"  📊 Sample mean: {sample.mean():.6f}")
-                print(f"  📊 Non-zero count: {(sample != 0).sum()}/{sample.numel()}")
-            '''
-            #del input_video
+
             # Convert to final image format
             sample = optimized_sample_to_image_format(sample)
-            '''
-            if debug:
-                # 🔧 DIAGNOSTIC: Vérifier les valeurs après optimized_sample_to_image_format
-                print(f"🔍 DIAGNOSTIC - Après optimized_sample_to_image_format:")
-                print(f"  📊 Sample range: [{sample.min():.6f}, {sample.max():.6f}]")
-                print(f"  📊 Sample mean: {sample.mean():.6f}")
-            '''
             sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
-            '''
-            if debug:
-                # 🔧 DIAGNOSTIC: Vérifier les valeurs finales
-                print(f"🔍 DIAGNOSTIC - Valeurs finales:")
-                print(f"  📊 Sample range: [{sample.min():.6f}, {sample.max():.6f}]")
-                print(f"  📊 Sample mean: {sample.mean():.6f}")
-                print(f"  🎯 Est-ce que l'image est noire? {sample.max() < 0.01}")
-            '''
             sample_cpu = sample.to("cpu")
             del sample
             batch_samples.append(sample_cpu)
@@ -441,6 +417,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         
         #del text_pos_embeds, text_neg_embeds
         #clear_vram_cache()
+    
+    
     for i in range(len(batch_samples)):
         batch_samples[i] = batch_samples[i].to(device)
     # Concatenate all batch results

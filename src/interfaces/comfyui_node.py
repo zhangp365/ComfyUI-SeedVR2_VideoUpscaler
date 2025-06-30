@@ -13,6 +13,10 @@ from src.utils.downloads import download_weight, get_base_cache_dir
 from src.core.model_manager import configure_runner
 from src.core.generation import generation_loop
 from src.optimization.memory_manager import clear_rope_lru_caches, fast_model_cleanup
+
+# Import ComfyUI progress reporting
+from server import PromptServer
+
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class SeedVR2:
@@ -24,6 +28,7 @@ class SeedVR2:
     - Adaptive VRAM management
     - Advanced dtype compatibility
     - Optimized inference pipeline
+    - Real-time progress reporting
     """
     
     def __init__(self):
@@ -86,10 +91,11 @@ class SeedVR2:
 
     def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
         batch_size: int, preserve_vram: bool) -> Tuple[torch.Tensor]:
-        """Execute SeedVR2 video upscaling"""
+        """Execute SeedVR2 video upscaling with progress reporting"""
         
         temporal_overlap = 0 
         print(f"🔄 Preparing model: {model}")
+        
         download_weight(model)
         debug = False
         cfg_scale = 1.0
@@ -160,8 +166,10 @@ class SeedVR2:
 
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug):
-        """Internal execution logic"""
+        """Internal execution logic with progress tracking"""
         total_start_time = time.time()
+
+        
         # Configure runner
         if debug:
             print("🔄 Configuring inference runner...")
@@ -170,20 +178,35 @@ class SeedVR2:
         if debug:
             print(f"🔄 Runner configuration time: {time.time() - runner_start:.2f}s")
         
+        
         if debug:
             print("🚀 Starting video upscaling generation...")
         
-        # Execute generation
+        # Execute generation with progress callback
         sample = generation_loop(
             self.runner, images, cfg_scale, seed, new_resolution, 
-            batch_size, preserve_vram, temporal_overlap, debug
+            batch_size, preserve_vram, temporal_overlap, debug,
+            progress_callback=self._progress_callback
         )
+        
+        
         print(f"✅ Video upscaling completed successfully!")
         # Cleanup
         print(f"🔄 Total execution time: {time.time() - total_start_time:.2f}s")           
         self.cleanup(force_ram_cleanup=True)
         return (sample,)
 
+    def _progress_callback(self, batch_idx, total_batches, current_batch_frames, message=""):
+        """Progress callback for generation loop"""
+            
+        # Send numerical progress
+        progress_value = int((batch_idx / total_batches) * 100)
+        progress_data = {
+            "value": progress_value,
+            "max": 100,
+            "node": "seedvr2_node"
+        }
+        PromptServer.instance.send_sync("progress", progress_data, None)
 
     def __del__(self):
         """Destructor"""
