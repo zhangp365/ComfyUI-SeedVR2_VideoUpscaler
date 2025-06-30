@@ -82,26 +82,20 @@ load venv and :
 pip install -r ComfyUI-SeedVR2_VideoUpscaler/requirements.txt
 ```
 
-install flash_attn or triton if it ask for it
+install flash_attn/triton, 6% faster on process, not a mandatory.
 
 ```bash
 pip install flash_attn
 pip install triton
 ```
 
-or from https://github.com/loscrossos/lib_flashattention/releases
-and
-https://github.com/woct0rdho/triton-windows
-
-Or use python_embeded :
-
-```bash
-python_embeded\python.exe -m pip install -r ComfyUI-SeedVR2_VideoUpscaler/requirements.txt
-```
+or
 
 ```bash
 python_embeded\python.exe -m pip install -r flash_attn
 ```
+
+check here from https://github.com/loscrossos/lib_flashattention/releases and https://github.com/woct0rdho/triton-windows
 
 3. Models
 
