@@ -37,6 +37,7 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - 🛠️ Fixed leak memory on 3B models.
 - ❌ Can now interrupt process if needed.
 - ✅ refactored the code for better sharing with the community, feel free to propose pull requests.
+- 🛠️ Removed flash attention dependency
 
 **2025.06.24**
 
