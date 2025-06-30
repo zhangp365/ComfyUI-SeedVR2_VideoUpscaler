@@ -35,6 +35,7 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 
 - 🚀 Speed Up the process and less VRAM used (see new benchmark).
 - 🛠️ Fixed leak memory on 3B models.
+- ❌ Can now interrupt process if needed.
 - ✅ refactored the code for better sharing with the community, feel free to propose pull requests.
 
 **2025.06.24**
