@@ -29,7 +29,7 @@ from src.optimization.performance import (
     optimized_sample_to_image_format, temporal_latent_blending
 )
 from common.seed import set_seed
-
+import comfy.model_management
 # Get script directory for embeddings
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -286,6 +286,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         # Main processing loop with context awareness
         for batch_idx in range(0, len(images), step):
             # Calculate batch indices with overlap
+            comfy.model_management.throw_exception_if_processing_interrupted()
             if batch_idx == 0:
                 # First batch: no overlap
                 start_idx = 0

@@ -61,11 +61,11 @@ class SeedVR2:
                     "tooltip": "Random seed for generation reproducibility"
                 }),
                 "new_resolution": ("INT", {
-                    "default": 1280, 
-                    "min": 1, 
+                    "default": 1072, 
+                    "min": 16, 
                     "max": 4320, 
-                    "step": 1,
-                    "tooltip": "Target width for upscaled video"
+                    "step": 16,
+                    "tooltip": "Target new resolution for upscaled video"
                 }),
                 "batch_size": ("INT", {
                     "default": 5, 
