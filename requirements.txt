@@ -4,4 +4,4 @@ flash_attn
 diffusers               # Diffusers
 torchvision             # Torchvision
 pytorch-extension #pytorch extension
-rotary-embedding-torch
+rotary_embedding_torch
