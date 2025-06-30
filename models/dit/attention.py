@@ -72,8 +72,8 @@ class TorchAttention(nn.Module):
         return b * h * (4 * d * (sq / 1e6) * (sk / 1e6))
 
     def forward(self, *args, **kwargs):
-        return pytorch_varlen_attention(*args, **kwargs)
-        #return F.scaled_dot_product_attention(*args, **kwargs)
+        #return pytorch_varlen_attention(*args, **kwargs)
+        return F.scaled_dot_product_attention(*args, **kwargs)
 
 
 class FlashAttentionVarlen(nn.Module):
@@ -87,4 +87,5 @@ class FlashAttentionVarlen(nn.Module):
 
     def forward(self, *args, **kwargs):
         kwargs["deterministic"] = torch.are_deterministic_algorithms_enabled()
-        return flash_attn_varlen_func(*args, **kwargs)
+        return pytorch_varlen_attention(*args, **kwargs)
+        #return flash_attn_varlen_func(*args, **kwargs)
