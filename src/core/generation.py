@@ -28,15 +28,15 @@ from src.optimization.performance import (
     optimized_video_rearrange, optimized_single_video_rearrange, 
     optimized_sample_to_image_format, temporal_latent_blending
 )
-from common.seed import set_seed
+from src.common.seed import set_seed
 import comfy.model_management
 # Get script directory for embeddings
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import transforms and color fix
 
-from data.image.transforms.divisible_crop import DivisibleCrop
-from data.image.transforms.na_resize import NaResize
+from src.data.image.transforms.divisible_crop import DivisibleCrop
+from src.data.image.transforms.na_resize import NaResize
 
 from src.utils.color_fix import wavelet_reconstruction
 

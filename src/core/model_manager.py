@@ -31,7 +31,7 @@ except ImportError:
 from src.optimization.memory_manager import get_basic_vram_info, clear_vram_cache
 from src.optimization.compatibility import FP8CompatibleDiT
 from src.optimization.memory_manager import preinitialize_rope_cache
-from common.config import load_config, create_object
+from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
 
 # NOUVEAU: Import des opérations ComfyUI pour FP8
@@ -77,7 +77,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False):
     # No need for dynamic path resolution here anymore!
     
     # Load and configure VAE with additional parameters
-    vae_config_path = os.path.join(script_directory, 'models/video_vae_v3/s8_c16_t4_inflation_sd3.yaml')
+    vae_config_path = os.path.join(script_directory, 'src/models/video_vae_v3/s8_c16_t4_inflation_sd3.yaml')
     t = time.time()
     vae_config = OmegaConf.load(vae_config_path)
     if debug:

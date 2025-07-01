@@ -20,27 +20,27 @@ from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
 from src.optimization.memory_manager import clear_vram_cache
-from models.video_vae_v3.modules.types import MemoryState
+from src.models.video_vae_v3.modules.types import MemoryState
 
-from common.config import create_object
-from common.decorators import log_on_entry, log_runtime
-from common.diffusion import (
+from src.common.config import create_object
+from src.common.decorators import log_on_entry, log_runtime
+from src.common.diffusion import (
     classifier_free_guidance_dispatcher,
     create_sampler_from_config,
     create_sampling_timesteps_from_config,
     create_schedule_from_config,
 )
-from common.distributed import (
+from src.common.distributed import (
     get_device,
     get_global_rank,
 )
 
-from common.distributed.meta_init_utils import (
+from src.common.distributed.meta_init_utils import (
     meta_non_persistent_buffer_init_fn,
 )
 # from common.fs import download
 
-from models.dit_v2 import na
+from src.models.dit_v2 import na
 
 
 def optimized_channels_to_last(tensor):

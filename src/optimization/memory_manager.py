@@ -10,8 +10,8 @@ import torch
 import gc
 import time
 from typing import Tuple, Optional
-from common.cache import Cache
-from models.dit_v2.rope import RotaryEmbeddingBase
+from src.common.cache import Cache
+from src.models.dit_v2.rope import RotaryEmbeddingBase
 
 
 def get_basic_vram_info():
