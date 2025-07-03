@@ -8,6 +8,9 @@ import os
 import argparse
 import time
 import multiprocessing as mp
+# Ensure safe CUDA usage with multiprocessing
+if mp.get_start_method(allow_none=True) != 'spawn':
+    mp.set_start_method('spawn', force=True)
 # -------------------------------------------------------------
 # 1) Gestion VRAM (cudaMallocAsync) déjà en place
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
@@ -228,7 +231,8 @@ def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
     model_dir = shared_args["model_dir"]
     model_name = shared_args["model"]
     # ensure model weights present (each process checks but very fast if already downloaded)
-    
+    if shared_args["debug"]:
+        print(f"🔄 Configuring runner for device {device_id}")
     runner = configure_runner(model_name, model_dir, shared_args["preserve_vram"], shared_args["debug"])
 
     # Run generation

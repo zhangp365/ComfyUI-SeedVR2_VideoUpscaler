@@ -61,6 +61,9 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False):
     if debug:
         print(f"🔄 RUNNER : VRAM INFO: {vram_info}")
     # Select config based on model type
+
+
+    
     if "7b" in model:
         config_path = os.path.join(script_directory, './configs_7b', 'main.yaml')
         model_weight = "7b_fp8" if "fp8" in model else "7b_fp16"
