@@ -34,9 +34,7 @@ from src.optimization.memory_manager import preinitialize_rope_cache
 from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
 
-# NOUVEAU: Import des opérations ComfyUI pour FP8
-import comfy.ops as ops
-import comfy.model_management as model_management
+
 # Get script directory for config paths
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

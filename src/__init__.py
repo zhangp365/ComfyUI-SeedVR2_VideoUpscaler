@@ -102,12 +102,14 @@ if MODULES_AVAILABLE['infer']:
 
 # ===== MODULE 8: ComfyUI Node ===== 
 if MODULES_AVAILABLE['comfyui_node']:
-    from src.interfaces.comfyui_node import (
-        SeedVR2,
-        NODE_CLASS_MAPPINGS,
-        NODE_DISPLAY_NAME_MAPPINGS
-    )
-    
+    try:
+        from src.interfaces.comfyui_node import (
+            SeedVR2,
+            NODE_CLASS_MAPPINGS,
+            NODE_DISPLAY_NAME_MAPPINGS
+        )
+    except:
+        pass
 
 # Export all available functions
 __all__ = [

@@ -4,6 +4,8 @@
 
 Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for ComfyUI that enables Upscale Video/Images generation.
 
+Can run as **standalone** too, see [🖥️ Run as Standalone](#️-run-as-standalone) section.
+
 <img src="docs/demo_01.jpg">
 <img src="docs/demo_02.jpg">
 
@@ -17,6 +19,7 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - [🔧 Requirements](#-requirements)
 - [📦 Installation](#-installation)
 - [📖 Usage](#-usage)
+- [🖥️ Run as Standalone](#️-run-as-standalone)
 - [📊 Benchmarks](#-benchmarks)
 - [⚠️ Limitations](#-Limitations)
 - [🤝 Contributing](#-contributing)
@@ -30,6 +33,10 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - 7B FP8 model seems to have quality issues, use 7BFP16 instead (If FP8 don't give OOM then FP16 will works) I have to review this.
 
 ## 🚀 Updates
+
+**2025.07.03**
+
+- 🛠️ Can run as **standalone mode** with **Multi GPU** see [🖥️ Run as Standalone](#️-run-as-standalone)
 
 **2025.06.30**
 
@@ -59,6 +66,7 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - High-quality Upscaling
 - Suitable for any video length once the right settings are found
 - Model Will Be Download Automatically from [Models](https://huggingface.co/numz/SeedVR2_comfyUI/tree/main)
+- Standalone mode
 
 ## 🔧 Requirements
 
@@ -66,6 +74,10 @@ Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for Comf
 - Last ComfyUI version with python 3.12.9 (may be works with older versions but I haven't test it)
 
 ## 📦 Installation
+
+Directly accessible from Comfyui-Manager, search "seedvr2" and click "Install" and restart.
+
+OR
 
 1. Clone this repository into your ComfyUI custom nodes directory:
 
@@ -125,6 +137,101 @@ Of course, the output resolution also has an impact, so if your hardware doesn't
    - `new_resolution`: New desired short edge in px, will keep ratio on other edge
    - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1" without temporal consistency, "5" for temporal consistency, but higher is this value better is the result.
    - `preserve_vram`: for VRAM < 24GB, If true, It will unload unused models during process, longer but works, otherwise probably OOM with
+
+## 🖥️ Run as Standalone
+
+You can also run SeedVR2 Video Upscaler as a standalone Multi-GPU support script without ComfyUI. This is useful for batch processing or when you prefer command-line operation or want to use multi-GPU.
+
+### Prerequisites for Standalone
+
+1. Need python 3.12.9 (I haven't test with other version, must works)
+2. **clone the repository**
+
+```
+git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler
+cd ComfyUI-SeedVR2_VideoUpscaler
+```
+
+3. **install python and create env** prefer python 3.12.9
+
+```
+
+conda create -n seedvr python=3.12.9
+conda activate seedvr
+
+or
+
+python -m venv venv
+
+windows :
+.\venv\Scripts\activate
+
+linux :
+source ./venv/bin/activate
+```
+
+2. **Install requirements** for standalone operation:
+
+```
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements.txt
+```
+
+### Comandline Usage
+
+```
+usage: inference_cli.py [-h]
+   --video_path VIDEO_PATH
+   [--seed SEED]
+   [--resolution RESOLUTION]
+   [--batch_size BATCH_SIZE]
+   [--model {
+      seedvr2_ema_3b_fp16.safetensors,
+      seedvr2_ema_3b_fp8_e4m3fn.safetensors,
+      seedvr2_ema_7b_fp16.safetensors,
+      seedvr2_ema_7b_fp8_e4m3fn.safetensors}]
+   [--model_dir MODEL_DIR]
+   [--skip_first_frames SKIP_FIRST_FRAMES]
+   [--load_cap LOAD_CAP]
+   [--output OUTPUT]
+   [--output_format {video,png}]
+   [--cuda_device CUDA_DEVICE]
+   [--preserve_vram]
+   [--debug]
+
+
+options:
+  -h, --help                              show this help message and exit
+  --video_path VIDEO_PATH                 Path to input video file
+  --seed SEED                             Random seed for generation (default: 100)
+  --resolution RESOLUTION                 Target resolution width (default: 1072)
+  --batch_size BATCH_SIZE                 Number of frames per batch (default: 5)
+  --model                                 Model to use (default: 3B FP8) in list:
+                                             seedvr2_ema_3b_fp16.safetensors,
+                                             seedvr2_ema_3b_fp8_e4m3fn.safetensors,
+                                             seedvr2_ema_7b_fp16.safetensors,
+                                             seedvr2_ema_7b_fp8_e4m3fn.safetensors
+  --model_dir MODEL_DIR                   Directory containing the model files (default: seedvr2_models)
+  --skip_first_frames SKIP_FIRST_FRAMES   Skip the first frames during processing
+  --load_cap LOAD_CAP                     Maximum number of frames to load from video (default: load all)
+  --output OUTPUT                         Output video path (default: auto-generated)
+  --output_format {video,png}             Output format: 'video' (mp4) or 'png' images (default: video)
+  --cuda_device CUDA_DEVICE               CUDA device id(s). Single id (e.g., '0') or comma-separated list '0,1' for multi-GPU
+  --preserve_vram                         Enable VRAM preservation mode
+  --debug                                 Enable debug logging
+
+```
+
+Examples :
+
+```
+# Upscale 18 frames as png
+python inference_cli.py --video_path "MAIN.mp4" --resolution 1072 --batch_size 9 --model seedvr2_ema_3b_fp8_e4m3fn.safetensors --model_dir ./models\SEEDVR2 --load_cap 18 --output "C:\Users\Emmanuel\Downloads\test_upscale" --output_format png --preserve_vram
+
+# Upscale 1000 frames on 4 GPU, each GPU will receive 250 frames and will process them 50 by 50
+python inference_cli.py --video_path "MAIN.mp4" --batch_size 50 --load_cap 1000 --output ".\outputs\test_upscale.mp4" --cuda_device 0,1,2,3
+
+```
 
 ## 📊 Benchmarks
 
@@ -221,3 +328,7 @@ When reporting issues, please include:
 # 📜 License
 
 - The code in this repository is released under the MIT license as found in the [LICENSE file](LICENSE).
+
+```
+
+```

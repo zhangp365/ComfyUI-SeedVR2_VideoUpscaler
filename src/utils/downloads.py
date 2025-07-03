@@ -7,17 +7,17 @@ Extracted from: seedvr2.py (line 968-1015)
 
 import os
 from huggingface_hub import hf_hub_download
-import folder_paths
+try:
+    import folder_paths
+    # Configuration des chemins
+    base_cache_dir = os.path.join(folder_paths.models_dir, "SEEDVR2")
 
+    # S'assurer que le dossier de cache existe
+    folder_paths.add_model_folder_path("seedvr2", os.path.join(folder_paths.models_dir, "SEEDVR2"))
+except:
+    base_cache_dir = "./models/SEEDVR2"
 
-# Configuration des chemins
-base_cache_dir = os.path.join(folder_paths.models_dir, "SEEDVR2")
-
-# S'assurer que le dossier de cache existe
-folder_paths.add_model_folder_path("seedvr2", os.path.join(folder_paths.models_dir, "SEEDVR2"))
-
-
-def download_weight(model):
+def download_weight(model, model_dir=None):
     """
     Télécharge un modèle SeedVR2 et son VAE associé depuis HuggingFace Hub
     
@@ -29,11 +29,15 @@ def download_weight(model):
     - Téléchargement du modèle principal
     - Téléchargement du VAE avec fallbacks:
       1. ema_vae_fp16.safetensors (priorité)
-      2. ema_vae_fp8_e4m3fn.safetensors (fallback)
+      2. ema_vae_fp8_e4m3fn.safetensors (fallback)  
       3. ema_vae.pth (legacy fallback)
     """
-    model_path = os.path.join(base_cache_dir, model)
-    vae_fp16_path = os.path.join(base_cache_dir, "ema_vae_fp16.safetensors")
+    if model_dir is None:
+        model_path = os.path.join(base_cache_dir, model)
+        vae_fp16_path = os.path.join(base_cache_dir, "ema_vae_fp16.safetensors")
+    else:
+        model_path = os.path.join(model_dir, model)
+        vae_fp16_path = os.path.join(model_dir, "ema_vae_fp16.safetensors")
    
     # Configuration HuggingFace
     repo_id = "numz/SeedVR2_comfyUI"

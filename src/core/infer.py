@@ -15,15 +15,11 @@
 import time
 from typing import List, Optional, Tuple, Union
 import torch
-import gc
 from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
 from src.optimization.memory_manager import clear_vram_cache
-from src.models.video_vae_v3.modules.types import MemoryState
 
-from src.common.config import create_object
-from src.common.decorators import log_on_entry, log_runtime
 from src.common.diffusion import (
     classifier_free_guidance_dispatcher,
     create_sampler_from_config,
@@ -32,12 +28,8 @@ from src.common.diffusion import (
 )
 from src.common.distributed import (
     get_device,
-    get_global_rank,
 )
 
-from src.common.distributed.meta_init_utils import (
-    meta_non_persistent_buffer_init_fn,
-)
 # from common.fs import download
 
 from src.models.dit_v2 import na
@@ -104,59 +96,7 @@ class VideoDiffusionInfer():
             cond[:, ..., -1:] = 1.0
             return cond
         raise NotImplementedError
-    '''
-    @log_on_entry
-    @log_runtime
-    def configure_dit_model(self, device="cpu", checkpoint=None):
-        # Load dit checkpoint.
-        # For fast init & resume,
-        #   when training from scratch, rank0 init DiT on cpu, then sync to other ranks with FSDP.
-        #   otherwise, all ranks init DiT on meta device, then load_state_dict with assign=True.
-        if self.config.dit.get("init_with_meta_device", False):
-            init_device = "cpu" if get_global_rank() == 0 and checkpoint is None else "meta"
-        else:
-            init_device = "cpu"
-
-        # Create dit model.
-        with torch.device(init_device):
-            self.dit = create_object(self.config.dit.model)
-        self.dit.set_gradient_checkpointing(self.config.dit.gradient_checkpoint)
-
-        if checkpoint:
-            state = torch.load(checkpoint, map_location="cpu", mmap=True)
-            loading_info = self.dit.load_state_dict(state, strict=True, assign=True)
-            print(f"Loading pretrained ckpt from {checkpoint}")
-            print(f"Loading info: {loading_info}")
-            self.dit = meta_non_persistent_buffer_init_fn(self.dit)
-
-        #if device in [get_device(), "cuda"]:
-            #self.dit.to(get_device())
-
-        # Print model size.
-        num_params = sum(p.numel() for p in self.dit.parameters() if p.requires_grad)
-        print(f"DiT trainable parameters: {num_params:,}")
-
-    @log_on_entry
-    @log_runtime
-    def configure_vae_model(self):
-        # Create vae model.
-        dtype = getattr(torch, self.config.vae.dtype)
-        self.vae = create_object(self.config.vae.model)
-        self.vae.requires_grad_(False).eval()
-        self.vae.to(device=get_device(), dtype=dtype)
-
-        # Load vae checkpoint.
-        state = torch.load(
-            self.config.vae.checkpoint, map_location=get_device(), mmap=True
-        )
-        self.vae.load_state_dict(state)
-
-        # Set causal slicing.
-        if hasattr(self.vae, "set_causal_slicing") and hasattr(self.config.vae, "slicing"):
-            self.vae.set_causal_slicing(**self.config.vae.slicing)
-
-    # ------------------------------ Diffusion ------------------------------ #
-    '''
+    
     def configure_diffusion(self):
         self.schedule = create_schedule_from_config(
             config=self.config.diffusion.schedule,
