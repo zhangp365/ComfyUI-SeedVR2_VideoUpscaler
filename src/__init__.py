@@ -12,7 +12,7 @@ Available Modules:
 - processing: Video and tensor processing (coming next)
 - interfaces: ComfyUI integration
 """
-
+'''
 # Track which modules are available for progressive migration
 MODULES_AVAILABLE = {
     'downloads': True,          # ✅ Module 1 - Downloads and model management
@@ -25,7 +25,7 @@ MODULES_AVAILABLE = {
     'comfyui_node': True,       # ✅ Module 8 - ComfyUI node interface (COMPLETE!)
     'infer': True,              # ✅ Module 9 - Infer
 }
-
+'''
 # Core imports (always available)
 import os
 import sys
@@ -35,7 +35,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-
+'''
 # Progressive import system with fallback
 # ===== MODULE 1: Downloads =====
 if MODULES_AVAILABLE['downloads']:
@@ -139,3 +139,4 @@ __all__ = [
     # Progress tracking
     'get_refactoring_progress'
 ] 
+'''

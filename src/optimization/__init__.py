@@ -2,7 +2,7 @@
 Optimization package for SeedVR2
 Contains memory management, performance optimizations, and compatibility layers
 """
-
+'''
 # Memory management functions
 from .memory_manager import (
     get_vram_usage,
@@ -46,3 +46,4 @@ __all__ = [
     "apply_fp8_compatibility_hooks",
     "remove_compatibility_hooks",
 ] 
+'''
