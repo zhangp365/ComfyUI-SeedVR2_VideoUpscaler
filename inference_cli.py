@@ -302,7 +302,7 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=100,
                         help="Random seed for generation (default: 100)")
     parser.add_argument("--resolution", type=int, default=1072,
-                        help="Target resolution width (default: 1072)")
+                        help="Target resolution of the short side (default: 1072)")
     parser.add_argument("--batch_size", type=int, default=1,
                         help="Number of frames per batch (default: 5)")
     parser.add_argument("--model", type=str, default="seedvr2_ema_3b_fp8_e4m3fn.safetensors",

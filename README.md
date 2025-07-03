@@ -4,7 +4,7 @@
 
 Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for ComfyUI that enables Upscale Video/Images generation.
 
-Can run as **standalone** too, see [🖥️ Run as Standalone](#️-run-as-standalone) section.
+Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-run-as-standalone) section.
 
 <img src="docs/demo_01.jpg">
 <img src="docs/demo_02.jpg">
@@ -148,8 +148,8 @@ You can also run SeedVR2 Video Upscaler as a standalone Multi-GPU support script
 2. **clone the repository**
 
 ```
-git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler
-cd ComfyUI-SeedVR2_VideoUpscaler
+git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler SeedVR2_VideoUpscaler
+cd SeedVR2_VideoUpscaler
 ```
 
 3. **install python and create env** prefer python 3.12.9
