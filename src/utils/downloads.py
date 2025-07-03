@@ -15,7 +15,7 @@ try:
     # S'assurer que le dossier de cache existe
     folder_paths.add_model_folder_path("seedvr2", os.path.join(folder_paths.models_dir, "SEEDVR2"))
 except:
-    base_cache_dir = "./models/SEEDVR2"
+    base_cache_dir = "./seedvr2_models"
 
 def download_weight(model, model_dir=None):
     """

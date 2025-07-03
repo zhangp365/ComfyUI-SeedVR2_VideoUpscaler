@@ -45,8 +45,6 @@ from src.data.image.transforms.na_resize import NaResize
 
 from src.utils.color_fix import wavelet_reconstruction
 
-# Import TileVAE processing
-from src.processing.tile_vae import TileVAEProcessor, calculate_optimal_tile_overlap, should_use_tile_vae
 
 
 def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, temporal_overlap):
@@ -191,8 +189,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         preserve_vram (str/bool): VRAM preservation mode
         temporal_overlap (int): Frames for temporal continuity
         progress_callback (callable): Optional callback for progress reporting
-        enable_tile_vae (bool): Enable TileVAE for high-resolution processing
-        tile_overlap (int): Overlap pixels for tile processing (auto-calculated if None)
         
     Returns:
         torch.Tensor: Generated video frames
@@ -204,7 +200,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         - Advanced video transformation pipeline
         - Intelligent VRAM management throughout process
         - Real-time progress reporting
-        - TileVAE support for high-resolution processing
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     

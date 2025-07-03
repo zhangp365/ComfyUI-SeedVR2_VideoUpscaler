@@ -97,7 +97,7 @@ class SeedVR2:
         print(f"🔄 Preparing model: {model}")
         
         download_weight(model)
-        debug = True
+        debug = False
         cfg_scale = 1.0
         try:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug)
