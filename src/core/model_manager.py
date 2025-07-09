@@ -31,9 +31,9 @@ except ImportError:
 from src.optimization.memory_manager import get_basic_vram_info, clear_vram_cache
 from src.optimization.compatibility import FP8CompatibleDiT
 from src.optimization.memory_manager import preinitialize_rope_cache, clear_rope_lru_caches
-from src.optimization.blockswap import apply_block_swap_to_dit
 from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
+from src.optimization.blockswap import apply_block_swap_to_dit
 
 # Get script directory for config paths
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,7 +49,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
         preserve_vram (bool): Whether to preserve VRAM
         debug (bool): Enable debug logging
         block_swap_config (dict): Optional BlockSwap configuration
-        cached_runner: Optional cached runner to reuse DiT model from
+        cached_runner: Optional cached runner to reuse entirely (not just DiT)
         
     Returns:
         VideoDiffusionInfer: Configured runner instance ready for inference
@@ -60,6 +60,58 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
         - VAE configuration with proper parameter handling
         - Memory optimization and RoPE cache pre-initialization
     """
+
+    # Check if we can fully reuse the cached runner
+    if cached_runner and block_swap_config and block_swap_config.get("cache_model", False):        
+        # Clear RoPE caches before reuse
+        if hasattr(cached_runner, 'dit'):
+            dit_model = cached_runner.dit
+            if hasattr(dit_model, 'dit_model'):
+                dit_model = dit_model.dit_model
+            clear_rope_lru_caches(dit_model)
+        
+        print(f"♻️ Reusing cached runner for {model}")
+        
+        # Check if blockswap needs to be applied
+        blockswap_needed = block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
+        
+        if blockswap_needed:
+            # Check if we have cached configuration
+            has_cached_config = hasattr(cached_runner, "_cached_blockswap_config")
+            
+            if has_cached_config:
+                # Compare configurations
+                cached_config = cached_runner._cached_blockswap_config
+                config_matches = (
+                    cached_config.get("blocks_to_swap") == block_swap_config.get("blocks_to_swap") and
+                    cached_config.get("offload_io_components") == block_swap_config.get("offload_io_components", False) and
+                    cached_config.get("use_non_blocking") == block_swap_config.get("use_non_blocking", True)
+                )
+                
+                if config_matches:
+                    # Configuration matches - fast re-application
+                    print("✅ BlockSwap config matches, performing fast re-application")
+                    
+                    # Mark as active before applying
+                    cached_runner._blockswap_active = True
+                    
+                    # Apply BlockSwap (will be fast since model structure is intact)
+                    apply_block_swap_to_dit(cached_runner, block_swap_config)
+                else:
+                    # Configuration changed - apply new config
+                    print("🔄 BlockSwap configuration changed, applying new config")
+                    apply_block_swap_to_dit(cached_runner, block_swap_config)
+            else:
+                # No cached config - apply fresh
+                print("🔄 Applying BlockSwap to cached runner")
+                apply_block_swap_to_dit(cached_runner, block_swap_config)
+            
+            return cached_runner
+        else:
+            # No BlockSwap needed
+            return cached_runner
+    
+    # If we reach here, create a new runner
     t = time.time()
     vram_info = get_basic_vram_info()
     if debug:
@@ -80,7 +132,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
         print(f"🔄 RUNNER : CONFIG LOAD TIME: {time.time() - t} seconds")
     # DiT model configuration is now handled directly in the YAML config files
     # No need for dynamic path resolution here anymore!
-    
+
     # Load and configure VAE with additional parameters
     vae_config_path = os.path.join(script_directory, 'src/models/video_vae_v3/s8_c16_t4_inflation_sd3.yaml')
     t = time.time()
@@ -93,11 +145,11 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
     spatial_downsample_factor = vae_config.get('spatial_downsample_factor', 8)
     temporal_downsample_factor = vae_config.get('temporal_downsample_factor', 4)
     
-
     vae_config.spatial_downsample_factor = spatial_downsample_factor
     vae_config.temporal_downsample_factor = temporal_downsample_factor
     if debug:
         print(f"🔄 RUNNER : VAE CONFIG SET TIME: {time.time() - t} seconds")
+    
     # Merge additional VAE config with main config (preserving __object__ from main config)
     t = time.time()
     config.vae.model = OmegaConf.merge(config.vae.model, vae_config)
@@ -108,50 +160,21 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
     # Create runner
     runner = VideoDiffusionInfer(config, debug)
     OmegaConf.set_readonly(runner.config, False)
+    # Store model name for cache validation
+    runner._model_name = model
     if debug:
         print(f"🔄 RUNNER : RUNNER VIDEO DIFFUSION INFER TIME: {time.time() - t} seconds")
+    
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Configure models
     checkpoint_path = os.path.join(base_cache_dir, f'./{model}')
     t = time.time()
+    runner = configure_dit_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config)
+    if debug:
+        print(f"🔄 RUNNER : DIT MODEL INFERENCE TIME: {time.time() - t} seconds")
     
-   # Check if we can reuse cached DiT model
-    if cached_runner and hasattr(cached_runner, 'dit') and cached_runner.dit is not None:
-        # Directly reuse the cached DiT model after cleaning       
-        # Transfer the model to the new runner
-        runner.dit = cached_runner.dit
-        
-        # Clear RoPE caches
-        clear_rope_lru_caches(runner.dit)
-        
-        # Get the base model for cleanup
-        base_model = runner.dit
-        if isinstance(base_model, FP8CompatibleDiT):
-            base_model = base_model.dit_model
-        
-        # Clear any accumulated buffers (especially RoPE-related)
-        for name, buffer in list(base_model.named_buffers()):
-            if 'cache' in name.lower() or 'freq' in name.lower():
-                # Re-initialize these buffers to clear accumulated state
-                if hasattr(buffer, 'zero_'):
-                    buffer.zero_()
-        
-        # Ensure model is in eval mode and gradients are disabled
-        runner.dit.requires_grad_(False).eval()
-        
-        # Clear CUDA cache to ensure clean memory state
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        if debug:
-            print(f"🔄 RUNNER : DiT MODEL DIRECT REUSE TIME: {time.time() - t} seconds")
-    else:
-        # Load DiT model normally
-        runner = configure_dit_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config)
-        if debug:
-            print(f"🔄 RUNNER : DIT MODEL INFERENCE TIME: {time.time() - t} seconds")
     t = time.time()
     checkpoint_path = os.path.join(base_cache_dir, f'./{config.vae.checkpoint}')
     runner = configure_vae_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config)
@@ -163,10 +186,12 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
         runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
     if debug:
         print(f"🔄 RUNNER : VAE MEMORY LIMIT TIME: {time.time() - t} seconds")
+    
     # Check if BlockSwap is active
     blockswap_active = (
         block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
     )
+    
     # Pre-initialize RoPE cache for optimal performance if BlockSwap is NOT active
     if not blockswap_active:
         t = time.time()
@@ -176,7 +201,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
     else:
         if debug:
             print(f"🔄 RUNNER : Skipping RoPE pre-init due to BlockSwap")
-
+    
     # Apply BlockSwap if configured
     if blockswap_active:
         apply_block_swap_to_dit(runner, block_swap_config)
@@ -300,7 +325,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config, preserve_v
 
     if 'state' in locals():
         del state
-
+            
     if debug:
         print(f"🔄 CONFIG DIT : DiT load time: {time.time() - t} seconds")
     #state.to("cpu")
@@ -309,7 +334,9 @@ def configure_dit_model_inference(runner, device, checkpoint, config, preserve_v
     # Apply universal compatibility wrapper to ALL models
     # This ensures RoPE compatibility and optimal performance across all architectures
     t = time.time()
-    runner.dit = FP8CompatibleDiT(runner.dit)
+    # Check if already wrapped to avoid double wrapping
+    if not isinstance(runner.dit, FP8CompatibleDiT):
+        runner.dit = FP8CompatibleDiT(runner.dit, skip_conversion=False)
     if debug:
         print(f"🔄 CONFIG DIT : FP8CompatibleDiT time: {time.time() - t} seconds")
 
@@ -332,15 +359,10 @@ def configure_dit_model_inference(runner, device, checkpoint, config, preserve_v
                 print(f"🔄 CONFIG DIT : Moving model from CPU to {device}")
             runner.dit.to(device)
 
-    # Clear VRAM for both preserve_vram and BlockSwap cases (fixes VRAM leak)
-    if preserve_vram or blockswap_active:
+     # Clear VRAM only for preserve_vram (not with BlockSwap which manages its own memory)
+    if preserve_vram and not blockswap_active:
         if debug:
-            reasons = []
-            if preserve_vram:
-                reasons.append("preserve_vram")
-            if blockswap_active:
-                reasons.append(f"BlockSwap")
-            print(f"🔄 CONFIG DIT : Clearing VRAM cache for: {' + '.join(reasons)}")
+            print(f"? CONFIG DIT : Clearing VRAM cache for preserve_vram")
         clear_vram_cache()
 
     return runner

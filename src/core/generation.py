@@ -29,7 +29,6 @@ from src.optimization.performance import (
     optimized_video_rearrange, optimized_single_video_rearrange, 
     optimized_sample_to_image_format, temporal_latent_blending
 )
-from src.optimization.blockswap import BlockSwapDebugger
 from src.common.seed import set_seed
 try:
     import comfy.model_management
@@ -148,7 +147,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     cond_latents = cond_latents[0].to("cpu")
     conditions = conditions[0].to("cpu")
     condition = condition.to("cpu")
-
+    
     return samples #, last_latents
 
 
@@ -311,6 +310,11 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     #images = images.to("cpu")
     #print(f"🔄 Images to CPU time: {time.time() - t} seconds")
     
+    # Use existing debugger from runner if available
+    if hasattr(runner, '_blockswap_debugger') and runner._blockswap_debugger is not None:
+        debugger = runner._blockswap_debugger
+        debugger.clear_history()
+    
     try:
         # Main processing loop with context awareness
         for batch_count, batch_idx in enumerate(range(0, len(images), step)):
@@ -429,58 +433,30 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
             if debug:
                 print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
-            if preserve_vram:
+            # Clean VRAM after each batch when preserve_vram is active (but not with blockswap)
+            if preserve_vram and not (block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0):
                 torch.cuda.empty_cache()
             #del transformed_video
             #clear_vram_cache()
+            # Log memory state at the end of each batch
+            if debugger:
+                debugger.log_memory_state(f"Batch {batch_number} - Memory", show_tensors=True)
 
     finally:
-        # Initializing BlockSwapDebugger logging
-        enable_debug = block_swap_config.get("enable_debug", False) if block_swap_config else False
-        debugger = BlockSwapDebugger(enabled=enable_debug)
-        # Log memory state before cleanup
-        debugger.log_memory_state(
-            "Generation complete - Before cleanup", show_tensors=True
-        )
-        debugger.log("🧹 VRAM cleanup")
+        debugger.log("🧹 Generation loop cleanup")
 
-        # Move models to CPU
+        # Final cleanup of embeddings
         text_pos_embeds = text_pos_embeds.to("cpu")
         text_neg_embeds = text_neg_embeds.to("cpu")
         runner.dit.to("cpu")
         runner.vae.to("cpu")
-        
-        # Clear runner cache
-        if hasattr(runner, "cache") and hasattr(runner.cache, "cache"):
-            # Move cached tensors to CPU before clearing
-            for value in runner.cache.cache.values():
-                if torch.is_tensor(value) and value.is_cuda:
-                    value.data = value.data.cpu()
-                elif isinstance(value, (list, tuple)):
-                    for item in value:
-                        if torch.is_tensor(item) and item.is_cuda:
-                            item.data = item.data.cpu()
-            runner.cache.cache.clear()
-        
-        # Find and clear any remaining GPU tensors
-        for obj in gc.get_objects():
-            try:
-                if torch.is_tensor(obj) and obj.is_cuda:
-                    obj.data = torch.empty(0, device=obj.device)
-            except:
-                pass
-        
-        # Force cleanup
-        gc.collect()
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
         #del text_pos_embeds, text_neg_embeds
         #clear_vram_cache()
 
         # Log final memory state
         debugger.log_memory_state(
-            "After cleanup", show_tensors=True
+            "Generation loop - After cleanup", show_tensors=True
         )
     
     # OPTIMISATION ULTIME : Pré-allocation et copie directe (évite les torch.cat multiples)
