@@ -137,6 +137,32 @@ Of course, the output resolution also has an impact, so if your hardware doesn't
    - `new_resolution`: New desired short edge in px, will keep ratio on other edge
    - `batch_size`: VERY IMPORTANT!, this model consume a lot of VRAM, All your VRAM, even for the 3B model, so for GPU under 24GB VRAM keep this value Low, good value is "1" without temporal consistency, "5" for temporal consistency, but higher is this value better is the result.
    - `preserve_vram`: for VRAM < 24GB, If true, It will unload unused models during process, longer but works, otherwise probably OOM with
+   
+4. 🧩 **BlockSwap Configuration (Optional - For Limited VRAM)**
+
+   <img src="docs/BlockSwap.png" width="100%">
+
+   BlockSwap enables running large models on GPUs with limited VRAM by dynamically swapping transformer blocks between GPU and CPU memory during inference.
+
+   **To enable BlockSwap:**
+   - Add the **SEEDVR2 BlockSwap Config** node to your workflow
+   - Connect its output to the `block_swap_config` input of the SeedVR2 Video Upscaler node
+
+   **BlockSwap parameters:**
+   - `blocks_to_swap` (0-32 for 3B model, 0-36 for 7B model): Number of transformer blocks to offload
+     - 0 = Disabled (fastest, highest VRAM)
+     - 16 = Balanced (moderate speed/VRAM trade-off)
+     - 32-36 = Maximum savings (slowest, lowest VRAM)
+   - `offload_io_components`: Move embeddings/IO layers to CPU (additional VRAM savings, slower)
+   - `use_non_blocking`: Asynchronous GPU transfers (keep True for better performance)
+   - `cache_model`: Keep model in RAM between runs (faster for batch processing)
+   - `enable_debug`: Show detailed memory usage and timing
+
+   **Finding optimal settings:**
+   - Start with `blocks_to_swap=16`, increase if you get OOM errors, decrease if you have spare VRAM
+   - Enable debug mode to monitor memory usage
+   - The first 1-2 blocks might show longer swap times - this is normal
+   - Combine with `preserve_vram=True` for maximum memory savings
 
 ## 🖥️ Run as Standalone
 
