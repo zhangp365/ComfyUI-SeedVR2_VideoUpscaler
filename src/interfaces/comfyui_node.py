@@ -158,7 +158,8 @@ class SeedVR2:
             
         else:
             # Full cleanup - existing implementation
-            debugger.log("🧹 Full cleanup - clearing everything")
+            if debugger:
+                debugger.log("🧹 Full cleanup - clearing everything")
 
             if self.runner:
                 # Clean BlockSwap if active
