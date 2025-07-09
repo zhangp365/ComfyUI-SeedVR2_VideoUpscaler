@@ -340,30 +340,20 @@ def configure_dit_model_inference(runner, device, checkpoint, config, preserve_v
     if debug:
         print(f"🔄 CONFIG DIT : FP8CompatibleDiT time: {time.time() - t} seconds")
 
-    # Handle model placement and VRAM clearing based on configuration
+    # Move DiT to CPU to prevent VRAM leaks (especially for 3B model with complex RoPE)
     if preserve_vram and not blockswap_active:
-        # Only move entire model to CPU if preserve_vram is active WITHOUT BlockSwap
         if debug:
-            print(f"🔄 CONFIG DIT : Moving model to CPU for preserve_vram")
+            print(f"🔄 CONFIG DIT : dit to cpu cause preserve_vram: {preserve_vram}")
         runner.dit = runner.dit.to("cpu")
-    elif blockswap_active:
-        # BlockSwap will handle its own GPU/CPU placement per block
-        if debug:
-            print(
-                f"🔄 CONFIG DIT : BlockSwap active ({block_swap_config.get('blocks_to_swap', 0)} blocks) - placement handled by BlockSwap"
-            )
+        if "7b" in model_weight:
+            clear_vram_cache()
     else:
-        # Normal case: move to GPU if loaded on CPU
-        if state_loading_device == "cpu":
-            if debug:
-                print(f"🔄 CONFIG DIT : Moving model from CPU to {device}")
+        if state_loading_device == "cpu" and not blockswap_active:
             runner.dit.to(device)
 
-     # Clear VRAM only for preserve_vram (not with BlockSwap which manages its own memory)
-    if preserve_vram and not blockswap_active:
-        if debug:
-            print(f"? CONFIG DIT : Clearing VRAM cache for preserve_vram")
-        clear_vram_cache()
+    # Log BlockSwap status if active
+    if blockswap_active and debug:
+        print(f"🔄 CONFIG DIT : BlockSwap active ({block_swap_config.get('blocks_to_swap', 0)} blocks) - placement handled by BlockSwap")
 
     return runner
 
