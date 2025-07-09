@@ -12,7 +12,7 @@ import time
 from typing import Tuple, Optional
 from src.common.cache import Cache
 from src.models.dit_v2.rope import RotaryEmbeddingBase
-
+from comfy import model_management as mm
 
 def get_basic_vram_info():
     """🔍 Méthode basique avec PyTorch natif"""
@@ -231,19 +231,7 @@ def fast_model_cleanup(model):
             if buffer is not None:
                 buffer.data = buffer.data.cpu()
     
-    # Deallocate the memory
-    def deallocate_recursive(m):
-        for child in m.children():
-            deallocate_recursive(child)
-        for param in m.parameters():
-            if param is not None:
-                param.data = torch.empty(0)
-        for buffer in m.buffers():
-            if buffer is not None:
-                buffer.data = torch.empty(0)
-    
     clear_recursive(model)
-    deallocate_recursive(model)
 
 
 def fast_ram_cleanup():
@@ -261,3 +249,144 @@ def fast_ram_cleanup():
         torch._C._clear_cache()
     except:
         pass
+    
+
+def clear_all_caches(runner, debugger=None) -> int:
+    """
+    Aggressively clear all caches from runner and model.
+    Optimized to only process what's necessary.
+    
+    Args:
+        runner: The runner instance to clear caches from
+        debugger: Optional BlockSwapDebugger instance for logging
+    """
+    if not runner:
+        return 0
+    
+    # Try to get debugger from runner if not provided
+    if debugger is None and hasattr(runner, '_blockswap_debugger'):
+        debugger = runner._blockswap_debugger
+    
+    # Helper function for logging
+    def log_message(message, level="INFO"):
+        if debugger and debugger.enabled:
+            debugger.log(message, level)
+        else:
+            print(f"  {message}")
+        
+    cleaned_items = 0
+    
+    # Early exit if no caches to clear
+    has_cache = hasattr(runner, 'cache') and hasattr(runner.cache, 'cache')
+    if not has_cache and not hasattr(runner, 'dit'):
+        return 0
+    
+    # Clear main runner cache efficiently
+    if has_cache and runner.cache.cache:
+        cache_entries = len(runner.cache.cache)
+        
+        # Process all cache items to properly free memory
+        for key, value in list(runner.cache.cache.items()):
+            if torch.is_tensor(value):
+                # Force deallocation of tensor storage
+                if value.is_cuda:
+                    value.data = value.data.cpu()
+                value.grad = None
+                if value.numel() > 0:
+                    value.data.set_()  # Release underlying storage
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if torch.is_tensor(item):
+                        if item.is_cuda:
+                            item.data = item.data.cpu()
+                        item.grad = None
+                        if item.numel() > 0:
+                            item.data.set_()
+        
+        # Clear the cache after processing
+        runner.cache.cache.clear()
+        cleaned_items += cache_entries
+        log_message(f"✅ Cleared {cache_entries} cache entries")
+    
+    # Clear any accumulated state in blocks
+    if hasattr(runner, 'dit'):
+        model = runner.dit
+        if hasattr(model, 'dit_model'):
+            model = model.dit_model
+
+        # Clear RoPE LRU caches
+        rope_caches_cleared = clear_rope_lru_caches(model)
+        cleaned_items += rope_caches_cleared
+        if rope_caches_cleared > 0:
+            log_message(f"✅ Cleared {rope_caches_cleared} RoPE LRU caches")
+            
+        # Clear block attributes if needed
+        if hasattr(model, 'blocks'):
+            block_attrs_cleared = 0
+            
+            # Define PyTorch's essential attributes that must NOT be deleted
+            essential_attrs = {
+                '_modules', '_parameters', '_buffers', 
+                '_forward_hooks', '_forward_pre_hooks', 
+                '_backward_hooks', '_backward_pre_hooks',
+                '_state_dict_hooks', '_state_dict_pre_hooks',
+                '_load_state_dict_pre_hooks', '_load_state_dict_post_hooks',
+                '_non_persistent_buffers_set', '_version',
+                '_is_full_backward_hook', 'training',
+                '_original_forward',  # BlockSwap attribute
+                '_is_io_wrapped',     # BlockSwap attribute
+                '_block_idx',         # BlockSwap attribute
+            }
+            
+            for idx, block in enumerate(model.blocks):
+                # Get all attributes that look like caches
+                attrs_to_remove = []
+                for attr_name in list(block.__dict__.keys()):
+                    # Only remove cache-like attributes, not essential PyTorch attributes
+                    if (attr_name not in essential_attrs and 
+                        ('cache' in attr_name or 
+                         'temp' in attr_name or 
+                         (attr_name.startswith('_') and 
+                          not attr_name.startswith('__') and 
+                          attr_name not in essential_attrs))):
+                        attrs_to_remove.append(attr_name)
+                
+                # Remove the identified attributes
+                for attr_name in attrs_to_remove:
+                    try:
+                        delattr(block, attr_name)
+                        block_attrs_cleared += 1
+                    except AttributeError:
+                        pass  # Already deleted or doesn't exist
+                            
+            if block_attrs_cleared > 0:
+                log_message(f"✅ Cleared {block_attrs_cleared} temporary attributes from blocks")
+    
+    # Clear any temporary attributes that might accumulate
+    temp_attrs = ['_temp_cache', '_block_cache', '_swap_cache', '_generation_cache',
+                  '_rope_cache', '_intermediate_cache', '_backward_cache']
+    
+    # Check both runner and model for these attributes
+    for obj in [runner, getattr(runner, 'dit', None)]:
+        if obj is None:
+            continue
+            
+        # Handle wrapped models
+        if hasattr(obj, 'dit_model'):
+            obj = obj.dit_model
+            
+        for attr in temp_attrs:
+            if hasattr(obj, attr):
+                delattr(obj, attr)
+                cleaned_items += 1
+                log_message(f"✅ Cleared {attr} from {type(obj).__name__}")
+                
+    # Force garbage collection
+    gc.collect(2)  # Collect all generations
+    
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        mm.soft_empty_cache()
+
+    return cleaned_items
