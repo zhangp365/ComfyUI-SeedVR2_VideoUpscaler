@@ -311,6 +311,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     #print(f"🔄 Images to CPU time: {time.time() - t} seconds")
     
     # Use existing debugger from runner if available
+    debugger = None
     if hasattr(runner, '_blockswap_debugger') and runner._blockswap_debugger is not None:
         debugger = runner._blockswap_debugger
         debugger.clear_history()
