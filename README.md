@@ -36,7 +36,7 @@ Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-ru
 
 **2025/09/07**
 
-- 🛠️ Blockswap Integration: Big thanks to @adrientoupet for this :), usefull for low VRAM users (see [usage](#-usage) section)
+- 🛠️ Blockswap Integration: Big thanks to [Adrien Toupet](https://github.com/adrientoupet) for this :), usefull for low VRAM users (see [usage](#-usage) section)
 
 **2025.07.03**
 
