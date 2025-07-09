@@ -34,6 +34,10 @@ Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-ru
 
 ## 🚀 Updates
 
+**2025/09/07**
+
+- 🛠️ Blockswap Integration: Big thanks to @adrientoupet for this :), usefull for low VRAM users (see [usage](#-usage) section)
+
 **2025.07.03**
 
 - 🛠️ Can run as **standalone mode** with **Multi GPU** see [🖥️ Run as Standalone](#️-run-as-standalone)
