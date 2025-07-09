@@ -28,8 +28,24 @@ class FP8CompatibleDiT(torch.nn.Module):
         
         # Only convert if not already done (e.g., when reusing cached weights)
         if not skip_conversion:
-            # Converting all parameters to BFloat16 to fix dtype compatibility issues
-            self._force_nadit_bfloat16()
+            # Detect model type
+            is_nadit_7b = self._is_nadit_model()      # NaDiT 7B (dit/nadit)
+            is_nadit_v2_3b = self._is_nadit_v2_model()  # NaDiT v2 3B (dit_v2/nadit)
+            
+            if is_nadit_7b:
+                # 🎯 CRITICAL FIX: ALL NaDiT 7B models (FP8 AND FP16) require BFloat16 conversion
+                # 7B architecture has dtype compatibility issues regardless of storage format
+                if self.is_fp8_model:
+                    print("🎯 Detected NaDiT 7B FP8 - Converting all parameters to BFloat16")
+                    self._force_nadit_bfloat16()
+                else:
+                    print("🎯 Detected NaDiT 7B FP16")
+                
+                
+            elif self.is_fp8_model and is_nadit_v2_3b:
+                # For NaDiT v2 3B FP8: Convert ALL model to BFloat16
+                print("🎯 Detected NaDiT v2 3B FP8 - Converting all parameters to BFloat16")
+                self._force_nadit_bfloat16()
         
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
         self._apply_flash_attention_optimization()
