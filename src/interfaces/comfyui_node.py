@@ -10,8 +10,14 @@ from typing import Tuple, Dict, Any
 from src.utils.downloads import download_weight, get_base_cache_dir
 from src.core.model_manager import configure_runner
 from src.core.generation import generation_loop
-from src.optimization.memory_manager import clear_rope_lru_caches, fast_model_cleanup, fast_ram_cleanup
-from src.optimization.blockswap import apply_block_swap_to_dit, BlockSwapDebugger, cleanup_blockswap
+from src.optimization.memory_manager import fast_model_cleanup, fast_ram_cleanup
+from src.optimization.blockswap import cleanup_blockswap
+from src.optimization.memory_manager import (
+    clear_rope_lru_caches, 
+    fast_model_cleanup, 
+    fast_ram_cleanup, 
+    clear_all_caches
+)
 
 # Import ComfyUI progress reporting
 from server import PromptServer
@@ -128,85 +134,102 @@ class SeedVR2:
                 hasattr(self.runner, "_blockswap_active") 
                 and self.runner._blockswap_active
             )
-            should_keep_model = is_blockswap_active
+            # Check if cache_model is enabled in config
+            cache_model_enabled = block_swap_config and block_swap_config.get("cache_model", False)
+            should_keep_model = is_blockswap_active and cache_model_enabled
         
-        # Initializing BlockSwapDebugger logging
-        enable_debug = block_swap_config.get("enable_debug", False) if block_swap_config else False
-        debugger = BlockSwapDebugger(enabled=enable_debug)
-        cleanup_type = "Partial cleanup - keeping model in RAM" if should_keep_model else "Full cleanup"
-        debugger.log(f"🧹 {cleanup_type}")
+        # Use existing debugger if available
+        debugger = None
+        if self.runner and hasattr(self.runner, '_blockswap_debugger'):
+            debugger = self.runner._blockswap_debugger
+            debugger.clear_history()
         
-        if self.runner:
-            # Clean up BlockSwap
-            if hasattr(self.runner, "_blockswap_active"):
-                cleanup_blockswap(self.runner)
+        # Perform partial or full cleanup based on model caching
+        if should_keep_model:
+            debugger.log("🧹 Partial cleanup - keeping model in RAM")
             
-            # Clear cache
-            if hasattr(self.runner, 'cache') and hasattr(self.runner.cache, 'cache'):
-                for key, value in list(self.runner.cache.cache.items()):
-                    if hasattr(value, 'cpu'):
-                        value.cpu()
-                    if hasattr(value, 'detach'):
-                        value.detach()
-                    del value
-                self.runner.cache.cache.clear()
+            # Clean BlockSwap with state preservation
+            if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
+                cleanup_blockswap(self.runner, keep_state_for_cache=True)
             
-            # Clear DiT model - only if not keeping cached
-            if not should_keep_model and hasattr(self.runner, 'dit') and self.runner.dit is not None:
-                clear_rope_lru_caches(self.runner.dit)
-                fast_model_cleanup(self.runner.dit)
-                del self.runner.dit
-                self.runner.dit = None
+            # Clear all caches
+            if self.runner:              
+                clear_all_caches(self.runner, debugger)
             
-            # Clear VAE model - only clear if not keeping model
-            if hasattr(self.runner, 'vae') and self.runner.vae is not None:
-                fast_model_cleanup(self.runner.vae)
-                del self.runner.vae
-                self.runner.vae = None
+        else:
+            # Full cleanup - existing implementation
+            debugger.log("🧹 Full cleanup - clearing everything")
 
-            # Clear other components - only if not keeping model
-            if not should_keep_model:
+            if self.runner:
+                # Clean BlockSwap if active
+                if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
+                    cleanup_blockswap(self.runner, keep_state_for_cache=False)
+                
+                # Clear cache
+                if hasattr(self.runner, 'cache') and hasattr(self.runner.cache, 'cache'):
+                    for key, value in list(self.runner.cache.cache.items()):
+                        if hasattr(value, 'cpu'):
+                            value.cpu()
+                        if hasattr(value, 'detach'):
+                            value.detach()
+                        del value
+                    self.runner.cache.cache.clear()
+                
+                # Clear DiT model
+                if hasattr(self.runner, 'dit') and self.runner.dit is not None:
+                    # Handle FP8CompatibleDiT wrapper
+                    if hasattr(self.runner.dit, 'dit_model'):
+                        # Clean inner model first
+                        clear_rope_lru_caches(self.runner.dit.dit_model)
+                        fast_model_cleanup(self.runner.dit.dit_model)
+                        # Break reference from wrapper to model
+                        self.runner.dit.dit_model = None
+                    else:
+                        # Direct model cleanup
+                        clear_rope_lru_caches(self.runner.dit)
+                        fast_model_cleanup(self.runner.dit)
+                    
+                    del self.runner.dit
+                    self.runner.dit = None
+                
+                # Clear VAE model  
+                if hasattr(self.runner, 'vae') and self.runner.vae is not None:
+                    #from src.optimization.memory_manager import fast_model_cleanup
+                    fast_model_cleanup(self.runner.vae)
+                    del self.runner.vae
+                    self.runner.vae = None
+                
+                # Clear other components
                 for component in ['sampler', 'sampling_timesteps', 'schedule', 'config']:
                     if hasattr(self.runner, component):
                         setattr(self.runner, component, None)
                 
                 del self.runner
                 self.runner = None
-                self.current_model_name = ""
-        
-        # Clear embeddings - keep on CPU if caching model
+            
+        # Clear embeddings
         if self.text_pos_embeds is not None:
-            if should_keep_model:
-                if hasattr(self.text_pos_embeds, 'is_cuda') and self.text_pos_embeds.is_cuda:
-                    self.text_pos_embeds = self.text_pos_embeds.cpu()
-            else:
-                if hasattr(self.text_pos_embeds, 'cpu'):
-                    self.text_pos_embeds.cpu()
-                del self.text_pos_embeds
-                self.text_pos_embeds = None
+            if hasattr(self.text_pos_embeds, 'cpu'):
+                self.text_pos_embeds.cpu()
+            del self.text_pos_embeds
+            self.text_pos_embeds = None
         
         if self.text_neg_embeds is not None:
-            if should_keep_model:
-                if hasattr(self.text_neg_embeds, 'is_cuda') and self.text_neg_embeds.is_cuda:
-                    self.text_neg_embeds = self.text_neg_embeds.cpu()
-            else:
-                if hasattr(self.text_neg_embeds, 'cpu'):
-                    self.text_neg_embeds.cpu()
-                del self.text_neg_embeds
-                self.text_neg_embeds = None
+            if hasattr(self.text_neg_embeds, 'cpu'):
+                self.text_neg_embeds.cpu()
+            del self.text_neg_embeds
+            self.text_neg_embeds = None
         
-        # Fast RAM cleanup - only if not keeping model
-        if force_ram_cleanup and not should_keep_model:
+        self.current_model_name = ""
+        
+        # Fast RAM cleanup
+        if force_ram_cleanup:
             fast_ram_cleanup()
         
-        # Log memory after cleanup
-        cleanup_type = "partial" if should_keep_model else "full"
-        debugger.log_memory_state(
-            f"After {cleanup_type} cleanup", show_tensors=True
-        )
-        
-        if should_keep_model:
-            print("✅ VRAM cleared, model kept in RAM for next inference")
+        # BlockSwap debugger memory state
+        if debugger is not None:
+            cleanup_stage = "partial" if should_keep_model else "full"
+            debugger.log_memory_state(f"After {cleanup_stage} cleanup", show_tensors=True)
 
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug, block_swap_config):
@@ -220,50 +243,39 @@ class SeedVR2:
             and block_swap_config.get("cache_model", False)
         )
 
-        # Check if we need to clear cache due to model change
-        model_changed = self.current_model_name != model
+        if self.runner is not None:
+            current_model = getattr(self.runner, '_model_name', None)
+            model_changed = current_model != model
 
-        if model_changed and self.runner is not None:
-            print(
-                f"🔄 Model changed from {self.current_model_name} to {model}, clearing cache..."
-            )
-            self.cleanup(
-                force_ram_cleanup=True,
-                keep_model_cached=False,
-                block_swap_config=block_swap_config,
-            )
-            self.runner = None
+            if model_changed and self.runner is not None:
+                print(
+                    f"🔄 Model changed from {self.current_model_name} to {model}, clearing cache..."
+                )
+                self.cleanup(
+                    force_ram_cleanup=True,
+                    keep_model_cached=False,
+                    block_swap_config=block_swap_config,
+                )
+                self.runner = None
 
+        # Configure runner
+        if debug:
+            print("🔄 Configuring inference runner...")
         runner_start = time.time()
-
-        # Configure runner (always create new runner for clean state)
-        if use_cache and self.runner is not None and not model_changed:
-            # Create new runner but reuse cached DiT model
-            print(f"♻️ Creating new runner with cached DiT model for {model}")
-            old_runner = self.runner
-            self.runner = configure_runner(
-                model, get_base_cache_dir(), preserve_vram, debug, 
-                block_swap_config=block_swap_config,
-                cached_runner=old_runner
-            )
-            if debug:
-                print(f"🔄 Runner configuration with cache time: {time.time() - runner_start:.2f}s")
-        else:
-            # Create completely new runner
-            if debug:
-                print("🔄 Configuring new inference runner...")
-            self.runner = configure_runner(
-                model, get_base_cache_dir(), preserve_vram, debug, 
-                block_swap_config=block_swap_config
-            )
-            self.current_model_name = model
-            if debug:
-                print(f"🔄 Runner configuration time: {time.time() - runner_start:.2f}s")
+        self.runner = configure_runner(
+            model, get_base_cache_dir(), preserve_vram, debug, 
+            block_swap_config=block_swap_config,
+            cached_runner=self.runner  # Pass existing runner if any
+        )
+        
+        self.current_model_name = model
+        
+        if debug:
+            print(f"🔄 Runner configuration time: {time.time() - runner_start:.2f}s")
         
         if debug:
             print("🚀 Starting video upscaling generation...")
 
-        
         # Execute generation with progress callback
         sample = generation_loop(
             self.runner, images, cfg_scale, seed, new_resolution, 
@@ -273,7 +285,7 @@ class SeedVR2:
         )
         
         
-        print(f"✅ Video upscaling completed successfully!")
+        print(f"✅ Video upscaling completed successfully!")       
         # Cleanup
         print(f"🔄 Total execution time: {time.time() - total_start_time:.2f}s")           
         self.cleanup(force_ram_cleanup=True, keep_model_cached=use_cache, block_swap_config=block_swap_config)
@@ -309,39 +321,39 @@ class SeedVR2BlockSwap:
                 "blocks_to_swap": (
                     "INT",
                     {
-                        "default": 25,
+                        "default": 16,
                         "min": 0,
                         "max": 36,
                         "step": 1,
-                        "tooltip": "Number of transformer blocks to swap. 0=disabled, higher=more VRAM savings but slower",
+                        "tooltip": "Number of transformer blocks to swap to CPU. Start with 16 and increase until OOM errors stop. 0=disabled",
                     },
                 ),
                 "use_non_blocking": (
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Use non-blocking GPU transfers. Faster but may use more RAM temporarily",
+                        "tooltip": "Use non-blocking GPU transfers for better performance.",
                     },
                 ),
                 "offload_io_components": (
                     "BOOLEAN",
                     {
-                        "default": True,
-                        "tooltip": "Offload ALL I/O components (embeddings, patch_embed, etc.) to CPU for maximum VRAM savings",
+                        "default": False,
+                        "tooltip": "Offload embeddings and I/O layers to CPU. Enable if you need additional VRAM savings beyond block swapping",
                     },
                 ),
                 "cache_model": (
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "Keep model cached in RAM between inferences. Faster subsequent runs but uses more RAM. Only applies when BlockSwap is active",
+                        "tooltip": "Keep model in RAM between runs to avoid model loading time. Useful for batch processing",
                     },
                 ),
                 "enable_debug": (
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "Enable debug logging for BlockSwap operations",
+                        "tooltip": "Show detailed memory usage and timing information during inference",
                     },
                 ),
             }
@@ -350,17 +362,30 @@ class SeedVR2BlockSwap:
     RETURN_TYPES = ("block_swap_config",)
     FUNCTION = "create_config"
     CATEGORY = "SEEDVR2"
-    DESCRIPTION = """Configure block swapping to reduce VRAM usage.
+    DESCRIPTION = """Configure block swapping to reduce VRAM usage during video upscaling.
 
-    Model Info:
-    - 3B model: 32 transformer blocks
-    - 7B model: 36 transformer blocks
+BlockSwap dynamically moves transformer blocks between GPU and CPU/RAM during inference, enabling large models to run on limited VRAM systems with minimal performance impact.
 
-    Guidelines:
-    - blocks_to_swap=0: No swapping (fastest, highest VRAM)
-    - blocks_to_swap=16: Balanced (moderate speed/VRAM)
-    - blocks_to_swap=36: Maximum saving (slowest, lowest VRAM)
-    - cache_model=True: Keep model in RAM between runs (faster but uses RAM)
+Configuration Guidelines:
+    - blocks_to_swap=0: Disabled (fastest, highest VRAM usage)
+    - blocks_to_swap=16: Balanced mode (moderate speed/VRAM trade-off)
+    - blocks_to_swap=32-36: Maximum savings (slowest, lowest VRAM)
+
+Advanced Options:
+    - use_non_blocking: Enables asynchronous GPU transfers for better performance
+    - offload_io_components: Moves embeddings and I/O layers to CPU for additional VRAM savings (slower)
+    - cache_model: Keeps model in RAM between runs (avoids model loading time on subsequent generations)
+    - enable_debug: Shows detailed memory usage and timing information
+
+Performance Tips:
+    - Start with blocks_to_swap=16 and increase until you no longer get OOM errors or decrease if you have spare VRAM
+    - Enable offload_io_components if you still need additional VRAM savings
+    - Note: Even if inference succeeds, you may still OOM during VAE decoding - combine BlockSwap with VAE tiling if needed (feature in development)
+    - Enable cache_model for batch processing to skip model reloading between runs
+    - Keep non_blocking=True for better performance (default)
+    - Combine with smaller batch_size for maximum VRAM savings
+
+The actual memory savings depend on your specific model architecture and will be shown in the debug output when enabled.
     """
 
     def create_config(
@@ -381,7 +406,7 @@ class SeedVR2BlockSwap:
                 configs.append("I/O components")
             if cache_model and blocks_to_swap > 0:
                 configs.append("model caching")
-            print(f"🔄 Offloading configured: {', '.join(configs)}")
+            print(f"🔄 BlockSwap configured: {', '.join(configs)}")
         return (
             {
                 "blocks_to_swap": blocks_to_swap,
