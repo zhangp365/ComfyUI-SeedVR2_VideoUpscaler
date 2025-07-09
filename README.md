@@ -48,7 +48,7 @@ Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-ru
 - 🛠️ Fixed leak memory on 3B models.
 - ❌ Can now interrupt process if needed.
 - ✅ refactored the code for better sharing with the community, feel free to propose pull requests.
-- 🛠️ Removed flash attention dependency (thanks to [luke2642]https://github.com/Luke2642) !!)
+- 🛠️ Removed flash attention dependency (thanks to [luke2642](https://github.com/Luke2642) !!)
 
 **2025.06.24**
 
