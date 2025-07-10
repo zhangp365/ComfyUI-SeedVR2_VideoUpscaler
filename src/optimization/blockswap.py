@@ -193,7 +193,7 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any]) -> None:
 
     debugger.log(f"Configuring: {blocks_to_swap}/{total_blocks} blocks for swapping")
     
-    debugger.log_memory_state("Before BlockSwap", show_tensors=True)
+    debugger.log_memory_state("Before BlockSwap", show_tensors=False)
 
     # Configure I/O components
     offload_io_components = block_swap_config.get("offload_io_components", False)
@@ -235,7 +235,7 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any]) -> None:
     # Protect model from being moved entirely
     _protect_model_from_move(model, runner, debugger)
 
-    debugger.log_memory_state("After BlockSwap", show_tensors=True)
+    debugger.log_memory_state("After BlockSwap", show_tensors=False)
     debugger.log("✅ BlockSwap configuration complete")
 
 
