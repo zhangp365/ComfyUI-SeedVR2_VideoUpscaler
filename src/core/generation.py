@@ -441,7 +441,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             #clear_vram_cache()
             # Log memory state at the end of each batch
             if debugger:
-                debugger.log_memory_state(f"Batch {batch_number} - Memory", show_tensors=True)
+                debugger.log_memory_state(f"Batch {batch_number} - Memory", show_tensors=False)
 
     finally:
         if debugger:
@@ -458,7 +458,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
 
         # Log final memory state
         if debugger:
-            debugger.log_memory_state("Generation loop - After cleanup", show_tensors=True)
+            debugger.log_memory_state("Generation loop - After cleanup", show_tensors=False)
     
     # OPTIMISATION ULTIME : Pré-allocation et copie directe (évite les torch.cat multiples)
     print(f"💾 Processing {len(batch_samples)} batch_samples with memory-optimized pre-allocation")
