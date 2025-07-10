@@ -76,15 +76,14 @@ class BlockSwapDebugger:
             component_type: Type of component ("block" or "io")
             direction: Direction of swap ("compute" or "offload")
         """
-        # Store timing data with component info
-        self.swap_times.append({
-            'component_id': component_id,
-            'component_type': component_type,
-            'duration': duration,
-            'direction': direction
-        })
-        
         if self.enabled:
+            # Store timing data with component info
+            self.swap_times.append({
+                'component_id': component_id,
+                'component_type': component_type,
+                'duration': duration,
+                'direction': direction
+            })
             # Format message based on component type
             if component_type == "block":
                 message = f"Block {component_id} swap {direction}: {duration*1000:.1f}ms"
@@ -97,31 +96,32 @@ class BlockSwapDebugger:
 
     def log_memory_state(self, stage: str, show_tensors: bool = False) -> None:
         """Log current memory state for debugging."""
-        # GPU Memory
-        if torch.cuda.is_available():
-            allocated_gb, reserved_gb, peak_gb = get_vram_usage()
-            vram_info = f"VRAM: {allocated_gb:.2f}/{reserved_gb:.2f}GB (peak: {peak_gb:.2f}GB)"
-            self.vram_history.append(allocated_gb)
-        else:
-            vram_info = "VRAM: CPU mode"
+        if self.enabled:
+            # GPU Memory
+            if torch.cuda.is_available():
+                allocated_gb, reserved_gb, peak_gb = get_vram_usage()
+                vram_info = f"VRAM: {allocated_gb:.2f}/{reserved_gb:.2f}GB (peak: {peak_gb:.2f}GB)"
+                self.vram_history.append(allocated_gb)
+            else:
+                vram_info = "VRAM: CPU mode"
 
-        # RAM Memory
-        ram_info = ""
-        if psutil:
-            try:
-                process = psutil.Process()
-                ram_gb = process.memory_info().rss / (1024**3)
-                ram_info = f" | RAM: {ram_gb:.1f}GB"
-            except Exception:
-                pass
+            # RAM Memory
+            ram_info = ""
+            if psutil:
+                try:
+                    process = psutil.Process()
+                    ram_gb = process.memory_info().rss / (1024**3)
+                    ram_info = f" | RAM: {ram_gb:.1f}GB"
+                except Exception:
+                    pass
 
-        # Tensor count (optional - expensive operation)
-        tensor_info = ""
-        if show_tensors:
-            tensor_count = sum(1 for obj in gc.get_objects() if torch.is_tensor(obj))
-            tensor_info = f" | Tensors: {tensor_count}"
+            # Tensor count (optional - expensive operation)
+            tensor_info = ""
+            if show_tensors:
+                tensor_count = sum(1 for obj in gc.get_objects() if torch.is_tensor(obj))
+                tensor_info = f" | Tensors: {tensor_count}"
 
-        self.log(f"🧮 {stage}: {vram_info}{ram_info}{tensor_info}")
+            self.log(f"🧮 {stage}: {vram_info}{ram_info}{tensor_info}")
 
     def clear_history(self) -> None:
         """Clear accumulated history."""
