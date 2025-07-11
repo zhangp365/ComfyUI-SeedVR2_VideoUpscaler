@@ -34,6 +34,14 @@ Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-ru
 
 ## 🚀 Updates
 
+**2025/07/11**
+
+- 🎬 Complete tutorial released: [Adrien from AInVFX](https://www.youtube.com/@AInVFX) created an in-depth ComfyUI SeedVR2 guide covering everything from basic setup to advanced BlockSwap techniques for running on consumer GPUs. Perfect for understanding memory optimization and upscaling of image sequences with alpha channel! [Watch the tutorial](#-usage)
+
+**2025/09/07**
+
+- 🛠️ Blockswap Integration: Big thanks to [Adrien Toupet](https://github.com/adrientoupet) from [AInVFX](https://www.youtube.com/@AInVFX) for this :), usefull for low VRAM users (see [usage](#-usage) section)
+- 
 **2025/09/07**
 
 - 🛠️ Blockswap Integration: Big thanks to [Adrien Toupet](https://github.com/adrientoupet) for this :), usefull for low VRAM users (see [usage](#-usage) section)
@@ -121,6 +129,14 @@ check here from https://github.com/loscrossos/lib_flashattention/releases and ht
    or can be found here ([MODELS](https://huggingface.co/numz/SeedVR2_comfyUI/tree/main))
 
 ## 📖 Usage
+
+### 🎬 Video Tutorial
+
+Learn everything about SeedVR2 in this comprehensive tutorial by Adrien from [AInVFX](https://www.youtube.com/@AInVFX), covering ComfyUI setup, BlockSwap for consumer GPUs, alpha workflows, and production tips:
+
+[![SeedVR2 Deep Dive Tutorial](https://img.youtube.com/vi/I0sl45GMqNg/maxresdefault.jpg)](https://youtu.be/I0sl45GMqNg)
+
+### Node Setup
 
 1. In ComfyUI, locate the **SeedVR2 Video Upscaler** node in the node menu.
 
