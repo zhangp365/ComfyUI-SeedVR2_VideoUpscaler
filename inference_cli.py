@@ -33,7 +33,6 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from src.utils.downloads import download_weight
-torch.cuda.init()
 
 # Add project root to sys.path for src module imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -378,7 +377,7 @@ def main():
         
         if args.debug:
             print(f"🔄 Frame extraction time: {time.time() - start_time:.2f}s")
-            print(f"📊 Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+            # print(f"📊 Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB") # may initialize cuda
         
         # Parse GPU list
         device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
