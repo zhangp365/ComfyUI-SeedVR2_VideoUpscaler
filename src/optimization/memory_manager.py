@@ -271,8 +271,6 @@ def clear_all_caches(runner, debugger=None) -> int:
     def log_message(message, level="INFO"):
         if debugger and debugger.enabled:
             debugger.log(message, level)
-        else:
-            print(f"  {message}")
         
     cleaned_items = 0
     

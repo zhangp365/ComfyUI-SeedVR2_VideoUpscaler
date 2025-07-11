@@ -230,7 +230,7 @@ class SeedVR2:
         # BlockSwap debugger memory state
         if debugger is not None:
             cleanup_stage = "partial" if should_keep_model else "full"
-            debugger.log_memory_state(f"After {cleanup_stage} cleanup", show_tensors=True)
+            debugger.log_memory_state(f"After {cleanup_stage} cleanup", show_tensors=False)
 
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug, block_swap_config):
