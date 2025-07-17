@@ -60,6 +60,8 @@ class SeedVR2:
                     "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
                     "seedvr2_ema_7b_fp16.safetensors",
                     "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+                    "seedvr2_ema_7b_sharp_fp16.safetensors",
+                    "seedvr2_ema_7b_sharp_fp8_e4m3fn.safetensors"
                 ], {
                     "default": "seedvr2_ema_3b_fp8_e4m3fn.safetensors"
                 }),
