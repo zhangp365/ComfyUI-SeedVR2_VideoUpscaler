@@ -70,8 +70,6 @@ if MODULES_AVAILABLE['performance']:
 if MODULES_AVAILABLE['compatibility']:
     from src.optimization.compatibility import (
         FP8CompatibleDiT,
-        apply_fp8_compatibility_hooks,
-        remove_compatibility_hooks,
     )
     
 
@@ -126,7 +124,7 @@ __all__ = [
     'validate_video_format', 'ensure_4n_plus_1_format', 'calculate_padding_requirements', 'apply_wavelet_reconstruction', 'temporal_consistency_check',
     
     # Compatibility
-    'FP8CompatibleDiT', 'apply_fp8_compatibility_hooks', 'remove_compatibility_hooks',
+    'FP8CompatibleDiT',
     
     # Core Model & Generation & Infer
     'configure_runner', 'load_quantized_state_dict', 'configure_dit_model_inference', 'configure_vae_model_inference',
