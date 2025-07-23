@@ -1,6 +1,6 @@
 """
 Downloads utility module for SeedVR2
-Handles model and VAE downloads from HuggingFace Hub
+Handles model and VAE downloads from HuggingFace
 
 Extracted from: seedvr2.py (line 968-1015)
 """
