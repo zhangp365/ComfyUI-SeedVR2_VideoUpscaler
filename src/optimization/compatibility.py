@@ -13,11 +13,11 @@ from typing import List, Tuple, Union, Any, Optional
 
 class FP8CompatibleDiT(torch.nn.Module):
     """
-    Wrapper for DiT models with automatic compatibility management + advanced optimizations
-    - FP8: Keeps native FP8 parameters, converts inputs/outputs
-    - FP16: Uses native FP16
-    - RoPE: Converted from FP8 to BFloat16 only when detected as FP8
-    - Flash Attention: Automatic optimization of attention layers
+    Universal DiT wrapper for quantization compatibility and optimizations
+    - FP8/INT4/INT8: Converts inputs to BFloat16 for computation
+    - Mixed Precision: Stabilizes RoPE for models with FP16 blocks
+    - RoPE: Converts FP8 frequencies to BFloat16 for compatibility
+    - Flash Attention: Optimizes attention layers when available
     """
     
     def __init__(self, dit_model, skip_conversion=False):
@@ -38,9 +38,9 @@ class FP8CompatibleDiT(torch.nn.Module):
             print(f"🎯 Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility")
             self._convert_rope_freqs()
             
-        # Handle mixed precision in quantized model
+        # Handle mixed precision models (quantized with FP16 blocks)
         if self.is_quantized_model:
-            self._wrap_fp16_blocks_in_quantized_model()
+            self._stabilize_rope_for_mixed_precision()
 
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
         self._apply_flash_attention_optimization()
@@ -52,12 +52,12 @@ class FP8CompatibleDiT(torch.nn.Module):
         except:
             return torch.bfloat16
     
-    def _wrap_fp16_blocks_in_quantized_model(self):
-        """Apply minimal RoPE fixes for mixed precision models"""
+    def _stabilize_rope_for_mixed_precision(self):
+        """Stabilize RoPE computations in mixed precision models to prevent artifacts"""
         if not hasattr(self.dit_model, 'blocks'):
             return
             
-        # Check if we have FP16 blocks in a quantized model
+        # Check if we have mixed precision (quantized model with FP16 blocks)
         has_fp16_blocks = False
         
         for block in self.dit_model.blocks:
@@ -71,31 +71,30 @@ class FP8CompatibleDiT(torch.nn.Module):
         if not has_fp16_blocks:
             return
             
-        print(f"🎯 Mixed Precision Model detected - applying minimal RoPE fix")
+        print(f"🎯 Mixed Precision Model detected - stabilizing RoPE computations")
         
         rope_count = 0
         
-        # Find RoPE modules the same way blockswap does - by NAME not class
+        # Wrap RoPE modules to handle mixed precision numerical instability
         for name, module in self.dit_model.named_modules():
             if "rope" in name.lower() and hasattr(module, "get_axial_freqs"):
                 original_method = module.get_axial_freqs
                 
-                # Minimal wrapper - just prevent errors from propagating as NaN
-                def safe_rope(self, *args, **kwargs):
+                # Minimal error handler - prevents NaN propagation
+                def stable_rope_computation(self, *args, **kwargs):
                     try:
                         return original_method(*args, **kwargs)
                     except Exception:
-                        # Clear cache and retry - this usually fixes it
+                        # Clear stale cache and retry without autocast
                         if hasattr(original_method, 'cache_clear'):
                             original_method.cache_clear()
-                        # Force recomputation in a safe dtype
                         with torch.cuda.amp.autocast(enabled=False):
                             return original_method(*args, **kwargs)
                 
-                module.get_axial_freqs = types.MethodType(safe_rope, module)
+                module.get_axial_freqs = types.MethodType(stable_rope_computation, module)
                 rope_count += 1
         
-        print(f"   ✅ Protected {rope_count} RoPE computations from mixed precision errors")
+        print(f"   ✅ Stabilized {rope_count} RoPE modules for artifact-free generation")
             
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
