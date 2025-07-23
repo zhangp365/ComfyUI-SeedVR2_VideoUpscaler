@@ -205,6 +205,61 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
     # Apply BlockSwap if configured
     if blockswap_active:
         apply_block_swap_to_dit(runner, block_swap_config)
+    else:
+        # === ADD THIS LOGGING CODE HERE ===
+        print("[DEBUG] Running WITHOUT blockswap - direct model execution")
+        
+        # Check if model has mixed precision
+        try:
+            # Get the actual model (handle FP8CompatibleDiT wrapper)
+            actual_model = runner.dit
+            if hasattr(actual_model, 'dit_model'):
+                actual_model = actual_model.dit_model
+                
+            if hasattr(actual_model, 'blocks'):
+                blocks = actual_model.blocks
+                block_dtypes = []
+                
+                # Analyze each block's dtype
+                for i, block in enumerate(blocks):
+                    try:
+                        block_dtype = next(block.parameters()).dtype
+                        block_dtypes.append((i, str(block_dtype)))
+                        
+                        # Special attention to last block
+                        if i == len(blocks) - 1:
+                            print(f"[DEBUG] Block {i} (LAST): dtype={block_dtype}")
+                            if block_dtype == torch.float16:
+                                print(f"[DEBUG] ⚠️ Last block is FP16 - potential mixed precision boundary")
+                            
+                            # Check all parameters in last block
+                            param_dtypes = set()
+                            for name, param in block.named_parameters():
+                                param_dtypes.add(str(param.dtype))
+                            if len(param_dtypes) > 1:
+                                print(f"[DEBUG] ⚠️ Last block has mixed dtypes: {param_dtypes}")
+                    except Exception as e:
+                        print(f"[DEBUG] Could not analyze block {i}: {e}")
+                
+                # Print dtype distribution
+                dtype_counts = {}
+                for idx, dtype_str in block_dtypes:
+                    dtype_counts[dtype_str] = dtype_counts.get(dtype_str, 0) + 1
+                
+                print(f"[DEBUG] Block dtype distribution: {dtype_counts}")
+                print(f"[DEBUG] Total blocks: {len(blocks)}")
+                
+                # Check for FP8/FP16 boundary
+                if len(block_dtypes) > 1:
+                    last_dtype = block_dtypes[-1][1]
+                    second_last_dtype = block_dtypes[-2][1] if len(block_dtypes) > 1 else None
+                    
+                    if 'float8' in str(second_last_dtype) and 'float16' in str(last_dtype):
+                        print(f"[DEBUG] ⚠️ MIXED PRECISION DETECTED: Blocks 0-{len(blocks)-2} are {second_last_dtype}, Block {len(blocks)-1} is {last_dtype}")
+                        print(f"[DEBUG] This mixed precision boundary may cause artifacts without blockswap!")
+                        
+        except Exception as e:
+            print(f"[DEBUG] Could not analyze model structure: {e}")
     #clear_vram_cache()
     return runner
 

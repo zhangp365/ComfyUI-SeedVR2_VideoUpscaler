@@ -351,22 +351,137 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
         if hasattr(model, 'blocks_to_swap') and self._block_idx <= model.blocks_to_swap:
             t_start = time.time() if debugger and debugger.enabled else None
 
+            # === ENHANCED DEBUG LOGGING ===
+            # Check if this is the last block
+            try:
+                total_blocks = len(model.blocks) if hasattr(model, 'blocks') else 0
+                is_last_block = self._block_idx == total_blocks - 1
+            except:
+                is_last_block = False
+            
+            # Log input tensor info - FIXED to handle actual inputs
+            if debugger and debugger.enabled:
+                input_info = []
+                
+                # Log all tensor arguments
+                for i, arg in enumerate(args):
+                    if isinstance(arg, torch.Tensor):
+                        input_info.append(f"arg[{i}]: dtype={arg.dtype}, device={arg.device}, shape={arg.shape}")
+                        
+                        # For last block, log sample values and statistics
+                        if is_last_block and i < 2:  # Only for vid and txt tensors
+                            with torch.no_grad():
+                                try:
+                                    # Get sample values
+                                    sample_vals = arg.flatten()[:5].tolist()
+                                    debugger.log(f"[Block {self._block_idx}] Input[{i}] sample values: {sample_vals}")
+                                    
+                                    # Get statistics
+                                    arg_float = arg.float()
+                                    mean_val = arg_float.mean().item()
+                                    std_val = arg_float.std().item()
+                                    min_val = arg_float.min().item()
+                                    max_val = arg_float.max().item()
+                                    debugger.log(f"[Block {self._block_idx}] Input[{i}] stats: mean={mean_val:.6f}, std={std_val:.6f}, min={min_val:.6f}, max={max_val:.6f}")
+                                    
+                                    # Check for anomalies
+                                    if abs(mean_val) > 10 or std_val > 100 or abs(min_val) > 1000 or abs(max_val) > 1000:
+                                        debugger.log(f"[Block {self._block_idx}] ⚠️ Input[{i}] has abnormal values!")
+                                except Exception as e:
+                                    debugger.log(f"[Block {self._block_idx}] Could not compute input[{i}] statistics: {e}")
+                
+                # Also log kwargs if any contain tensors
+                for key, value in kwargs.items():
+                    if isinstance(value, torch.Tensor):
+                        input_info.append(f"kwarg[{key}]: dtype={value.dtype}, device={value.device}, shape={value.shape}")
+                
+                if input_info:
+                    debugger.log(f"[Block {self._block_idx}] {'LAST BLOCK (FP16)' if is_last_block else 'FP8'} Pre-swap inputs: {input_info}")
+                else:
+                    debugger.log(f"[Block {self._block_idx}] {'LAST BLOCK (FP16)' if is_last_block else 'FP8'} Pre-swap: No tensor inputs found in {len(args)} args")
+                    
+                # Log block parameter dtypes
+                param_dtypes = set()
+                for param in self.parameters():
+                    param_dtypes.add(str(param.dtype))
+                debugger.log(f"[Block {self._block_idx}] Block param dtypes: {param_dtypes}")
+
             # Only move to GPU if necessary
             current_device = next(self.parameters()).device
             target_device = torch.device(model.main_device)
             
             if current_device != target_device:
+                # Log before .to() operation
+                if debugger and debugger.enabled:
+                    debugger.log(f"[Block {self._block_idx}] Moving from {current_device} to {target_device}")
+                    
                 self.to(model.main_device, non_blocking=model.use_non_blocking)
                 
+                # Log after .to() operation
+                if debugger and debugger.enabled:
+                    # Check if dtypes changed
+                    new_param_dtypes = set()
+                    for param in self.parameters():
+                        new_param_dtypes.add(str(param.dtype))
+                    if new_param_dtypes != param_dtypes:
+                        debugger.log(f"[Block {self._block_idx}] WARNING: DTYPE CHANGE after .to(): {param_dtypes} -> {new_param_dtypes}")
+                    
             # Synchronize if needed
             if hasattr(model, 'use_non_blocking') and not model.use_non_blocking:
                 torch.cuda.synchronize()
 
             # Execute forward pass with OOM protection
-            output = original_forward(*args, **kwargs)
+            try:
+                output = original_forward(*args, **kwargs)
+            except Exception as e:
+                debugger.log(f"[Block {self._block_idx}] ERROR in forward: {e}")
+                raise
+            
+            # === ENHANCED OUTPUT LOGGING ===
+            if debugger and debugger.enabled:
+                # Handle different output types (tuple or single tensor)
+                output_tensors = []
+                if isinstance(output, tuple):
+                    for i, out in enumerate(output):
+                        if isinstance(out, torch.Tensor):
+                            output_tensors.append((i, out))
+                elif isinstance(output, torch.Tensor):
+                    output_tensors.append((0, output))
+                
+                for idx, out_tensor in output_tensors:
+                    debugger.log(f"[Block {self._block_idx}] Output[{idx}]: dtype={out_tensor.dtype}, device={out_tensor.device}, shape={out_tensor.shape}")
+                    
+                    # Detailed analysis for last block
+                    if is_last_block:
+                        with torch.no_grad():
+                            has_nan = torch.isnan(out_tensor).any().item()
+                            has_inf = torch.isinf(out_tensor).any().item()
+                            
+                            if has_nan or has_inf:
+                                debugger.log(f"[Block {self._block_idx}] ⚠️ WARNING: Output has NaN={has_nan}, Inf={has_inf}")
+                                
+                            # Compute statistics
+                            try:
+                                out_float = out_tensor.float()
+                                mean_val = out_float.mean().item()
+                                std_val = out_float.std().item()
+                                min_val = out_float.min().item()
+                                max_val = out_float.max().item()
+                                
+                                debugger.log(f"[Block {self._block_idx}] Output stats: mean={mean_val:.6f}, std={std_val:.6f}, min={min_val:.6f}, max={max_val:.6f}")
+                                
+                                # Check for artifact indicators
+                                if abs(mean_val) > 10 or std_val > 100 or abs(min_val) > 1000 or abs(max_val) > 1000:
+                                    debugger.log(f"[Block {self._block_idx}] ⚠️ ABNORMAL VALUES DETECTED - potential artifacts!")
+                            except:
+                                debugger.log(f"[Block {self._block_idx}] Could not compute output statistics")
 
             # Move back to offload device
             self.to(model.offload_device, non_blocking=model.use_non_blocking)
+            
+            # === LOG POST-OFFLOAD STATE ===
+            if debugger and debugger.enabled:
+                debugger.log(f"[Block {self._block_idx}] Post-offload complete")
             
             # Log timing if debugger is available
             if debugger and t_start is not None:
@@ -381,6 +496,9 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
             if torch.cuda.memory_allocated() > torch.cuda.get_device_properties(0).total_memory * 0.9:
                 mm.soft_empty_cache()
         else:
+            # === LOG NON-SWAPPED BLOCKS ===
+            if debugger and debugger.enabled and self._block_idx % 10 == 0:  # Log every 10th non-swapped block
+                debugger.log(f"[Block {self._block_idx}] Running without swap (block > blocks_to_swap)")
             output = original_forward(*args, **kwargs)
 
         return output
