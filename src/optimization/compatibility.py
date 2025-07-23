@@ -6,7 +6,6 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
-import types
 from src.optimization.blockswap import _patch_rope_for_blockswap, BlockSwapDebugger
 from typing import List, Tuple, Union, Any, Optional
 
@@ -53,59 +52,51 @@ class FP8CompatibleDiT(torch.nn.Module):
             return torch.bfloat16
     
     def _wrap_fp16_blocks_in_quantized_model(self):
-        """Handle mixed precision models by fixing RoPE dtype mismatches in FP16 blocks"""
+        """Apply minimal RoPE fixes for mixed precision models"""
         if not hasattr(self.dit_model, 'blocks'):
             return
             
-        # Find FP16 blocks in a quantized model
-        fp16_blocks = []
-        quantized_dtype = self.model_dtype
+        # Check if we have FP16 blocks in a quantized model
+        has_fp16_blocks = False
         
-        for i, block in enumerate(self.dit_model.blocks):
+        for block in self.dit_model.blocks:
             try:
-                block_dtype = next(block.parameters()).dtype
-                if block_dtype == torch.float16:
-                    fp16_blocks.append((i, block))
+                if next(block.parameters()).dtype == torch.float16:
+                    has_fp16_blocks = True
+                    break
             except:
                 continue
         
-        if not fp16_blocks:
+        if not has_fp16_blocks:
             return
             
-        dtype_name = str(quantized_dtype).split('.')[-1].upper()
-        print(f"🎯 Mixed Precision {dtype_name} Model: Found {len(fp16_blocks)} FP16 blocks")
+        print(f"🎯 Mixed Precision Model detected - applying stability fixes")
         
-        # Patch RoPE in FP16 blocks
-        for block_idx, block in fp16_blocks:
-            rope_patched = 0
-            
-            # Find and wrap only RoPE modules within this FP16 block
-            for name, module in block.named_modules():
-                if "rope" in name.lower() and hasattr(module, "get_axial_freqs"):
-                    original_method = module.get_axial_freqs
-                    
-                    def dtype_safe_rope(self, *args, **kwargs):
-                        # Ensure inputs are in float16 for FP16 block's RoPE
-                        converted_args = []
-                        for arg in args:
-                            if isinstance(arg, torch.Tensor) and arg.dtype == torch.bfloat16:
-                                converted_args.append(arg.to(torch.float16))
-                            else:
-                                converted_args.append(arg)
-                        
-                        # Execute RoPE computation with correct dtype
-                        result = original_method(*converted_args, **kwargs)
-                        
-                        # Ensure output matches expected dtype
-                        if hasattr(result, 'dtype') and result.dtype != torch.float16:
-                            result = result.to(torch.float16)
-                        
-                        return result
-                    
-                    module.get_axial_freqs = types.MethodType(dtype_safe_rope, module)
-                    rope_patched += 1
-            
-            print(f"   ✅ Patched {rope_patched} RoPE modules in FP16 block {block_idx}")
+        # Apply minimal RoPE patching - only for mixed models
+        import types
+        rope_count = 0
+        
+        for module in self.dit_model.modules():
+            if hasattr(module, 'get_axial_freqs') and 'rope' in module.__class__.__name__.lower():
+                original = module.get_axial_freqs
+                
+                # Minimal wrapper - only catch the specific error that occurs
+                def stable_rope(self, *args, **kwargs):
+                    try:
+                        return original(*args, **kwargs)
+                    except RuntimeError as e:
+                        if "device" in str(e) or "memory" in str(e):
+                            # Only fallback for memory/device errors
+                            self.cpu()
+                            result = original(*args, **kwargs)
+                            self.cuda()
+                            return result.cuda() if hasattr(result, 'cuda') else result
+                        raise  # Re-raise other errors
+                
+                module.get_axial_freqs = types.MethodType(stable_rope, module)
+                rope_count += 1
+        
+        print(f"   ✅ Stabilized {rope_count} RoPE modules for mixed precision")
             
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
