@@ -6,7 +6,7 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
-import types
+from src.optimization.blockswap import _patch_rope_for_blockswap, BlockSwapDebugger
 from typing import List, Tuple, Union, Any, Optional
 
 
@@ -52,10 +52,10 @@ class FP8CompatibleDiT(torch.nn.Module):
             return torch.bfloat16
     
     def _wrap_fp16_blocks_in_quantized_model(self):
-        """Handle FP16 blocks in quantized models by ensuring proper initialization"""
+        """Handle mixed precision models by applying RoPE fixes that make FP16 blocks stable"""
         if not hasattr(self.dit_model, 'blocks'):
             return
-        
+            
         # Find FP16 blocks in a quantized model
         fp16_blocks = []
         quantized_dtype = self.model_dtype
@@ -64,7 +64,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             try:
                 block_dtype = next(block.parameters()).dtype
                 if block_dtype == torch.float16:
-                    fp16_blocks.append((i, block))
+                    fp16_blocks.append(i)
             except:
                 continue
         
@@ -74,32 +74,12 @@ class FP8CompatibleDiT(torch.nn.Module):
         dtype_name = str(quantized_dtype).split('.')[-1].upper()
         print(f"🎯 Mixed Precision {dtype_name} Model: Found {len(fp16_blocks)} FP16 blocks")
         
-        # For each FP16 block, ensure it's properly initialized and wrap it
-        for block_idx, block in fp16_blocks:
-            # Force the block through a .to() operation to ensure proper initialization
-            # This triggers buffer updates and state resets that prevent NaN
-            device = next(block.parameters()).device
-            block.to(device)  # This triggers side effects even if already on device
-            
-            # Now wrap the forward to ensure the block is "refreshed" before each use
-            original_forward = block.forward
-            
-            def fp16_forward_with_refresh(self, *args, **kwargs):
-                # Get current device
-                current_device = next(self.parameters()).device
-                
-                # Critical: Call .to() even if already on the device
-                # This replicates blockswap's behavior of refreshing the block's state
-                self.to(current_device)
-                
-                # Now execute forward pass normally
-                return original_forward(*args, **kwargs)
-            
-            # Bind the wrapped forward
-            block.forward = types.MethodType(fp16_forward_with_refresh, block)
-            block._fp16_wrapped = True
-            
-            print(f"   ✅ Wrapped FP16 block {block_idx} with state refresh")
+        # Apply RoPE patching from blockswap - this is what actually fixes the artifacts
+        # The FP16 block has RoPE computations that are unstable on GPU with mixed precision
+        debugger = BlockSwapDebugger(enabled=False)  # Silent debugger
+        _patch_rope_for_blockswap(self.dit_model, debugger)
+        
+        print(f"   ✅ Applied RoPE stability patches for mixed precision model")
             
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
