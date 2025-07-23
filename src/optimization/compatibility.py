@@ -52,7 +52,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             return torch.bfloat16
     
     def _wrap_fp16_blocks_in_quantized_model(self):
-        """Apply minimal RoPE fixes for mixed precision models"""
+        """Clear RoPE caches for mixed precision models to prevent numerical instability"""
         if not hasattr(self.dit_model, 'blocks'):
             return
             
@@ -70,33 +70,26 @@ class FP8CompatibleDiT(torch.nn.Module):
         if not has_fp16_blocks:
             return
             
-        print(f"🎯 Mixed Precision Model detected - applying stability fixes")
+        print(f"🎯 Mixed Precision Model detected - clearing RoPE caches")
         
-        # Apply minimal RoPE patching - only for mixed models
-        import types
-        rope_count = 0
+        # Clear all RoPE LRU caches to prevent stale cached values
+        # This is the actual fix - cached RoPE freqs become invalid with mixed precision
+        cleared_count = 0
         
+        for name, module in self.dit_model.named_modules():
+            if "rope" in name.lower() and hasattr(module, "get_axial_freqs"):
+                if hasattr(module.get_axial_freqs, 'cache_clear'):
+                    module.get_axial_freqs.cache_clear()
+                    cleared_count += 1
+        
+        # Also check for RotaryEmbedding modules (different naming convention)
         for module in self.dit_model.modules():
-            if hasattr(module, 'get_axial_freqs') and 'rope' in module.__class__.__name__.lower():
-                original = module.get_axial_freqs
-                
-                # Minimal wrapper - only catch the specific error that occurs
-                def stable_rope(self, *args, **kwargs):
-                    try:
-                        return original(*args, **kwargs)
-                    except RuntimeError as e:
-                        if "device" in str(e) or "memory" in str(e):
-                            # Only fallback for memory/device errors
-                            self.cpu()
-                            result = original(*args, **kwargs)
-                            self.cuda()
-                            return result.cuda() if hasattr(result, 'cuda') else result
-                        raise  # Re-raise other errors
-                
-                module.get_axial_freqs = types.MethodType(stable_rope, module)
-                rope_count += 1
+            if 'RotaryEmbedding' in type(module).__name__:
+                if hasattr(module, 'get_axial_freqs') and hasattr(module.get_axial_freqs, 'cache_clear'):
+                    module.get_axial_freqs.cache_clear()
+                    cleared_count += 1
         
-        print(f"   ✅ Stabilized {rope_count} RoPE modules for mixed precision")
+        print(f"   ✅ Cleared {cleared_count} RoPE caches for mixed precision stability")
             
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
