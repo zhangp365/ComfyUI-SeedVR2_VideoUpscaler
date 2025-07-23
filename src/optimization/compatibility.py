@@ -6,6 +6,7 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
+import types
 from typing import List, Tuple, Union, Any, Optional
 
 
@@ -24,8 +25,10 @@ class FP8CompatibleDiT(torch.nn.Module):
         self.model_dtype = self._detect_model_dtype()
         self.is_fp8_model = self.model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
         self.is_fp16_model = self.model_dtype == torch.float16
-        self._forward_count = 0
-        
+        self._forward_count = 0        
+       # Detect if this is a quantized model (FP8, INT4, INT8, etc.)
+        self.is_quantized_model = self.model_dtype not in (torch.float16, torch.float32, torch.bfloat16)
+    
         # Only convert if not already done (e.g., when reusing cached weights)
         if not skip_conversion and self.is_fp8_model:
             # Only FP8 models need RoPE frequency conversion
@@ -34,7 +37,10 @@ class FP8CompatibleDiT(torch.nn.Module):
             print(f"🎯 Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility")
             self._convert_rope_freqs()
             
-                      
+        # Handle mixed precision in quantized model
+        if self.is_quantized_model:
+            self._wrap_fp16_blocks_in_quantized_model()
+
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
         self._apply_flash_attention_optimization()
     
@@ -45,6 +51,56 @@ class FP8CompatibleDiT(torch.nn.Module):
         except:
             return torch.bfloat16
     
+    def _wrap_fp16_blocks_in_quantized_model(self):
+        """Handle FP16 blocks in quantized models by ensuring proper initialization"""
+        if not hasattr(self.dit_model, 'blocks'):
+            return
+        
+        # Find FP16 blocks in a quantized model
+        fp16_blocks = []
+        quantized_dtype = self.model_dtype
+        
+        for i, block in enumerate(self.dit_model.blocks):
+            try:
+                block_dtype = next(block.parameters()).dtype
+                if block_dtype == torch.float16:
+                    fp16_blocks.append((i, block))
+            except:
+                continue
+        
+        if not fp16_blocks:
+            return
+            
+        dtype_name = str(quantized_dtype).split('.')[-1].upper()
+        print(f"🎯 Mixed Precision {dtype_name} Model: Found {len(fp16_blocks)} FP16 blocks")
+        
+        # For each FP16 block, ensure it's properly initialized and wrap it
+        for block_idx, block in fp16_blocks:
+            # Force the block through a .to() operation to ensure proper initialization
+            # This triggers buffer updates and state resets that prevent NaN
+            device = next(block.parameters()).device
+            block.to(device)  # This triggers side effects even if already on device
+            
+            # Now wrap the forward to ensure the block is "refreshed" before each use
+            original_forward = block.forward
+            
+            def fp16_forward_with_refresh(self, *args, **kwargs):
+                # Get current device
+                current_device = next(self.parameters()).device
+                
+                # Critical: Call .to() even if already on the device
+                # This replicates blockswap's behavior of refreshing the block's state
+                self.to(current_device)
+                
+                # Now execute forward pass normally
+                return original_forward(*args, **kwargs)
+            
+            # Bind the wrapped forward
+            block.forward = types.MethodType(fp16_forward_with_refresh, block)
+            block._fp16_wrapped = True
+            
+            print(f"   ✅ Wrapped FP16 block {block_idx} with state refresh")
+            
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
         # Check module path for dit (not dit_v2) 
