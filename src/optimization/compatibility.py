@@ -6,6 +6,7 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
+import types
 from src.optimization.blockswap import _patch_rope_for_blockswap, BlockSwapDebugger
 from typing import List, Tuple, Union, Any, Optional
 
@@ -52,7 +53,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             return torch.bfloat16
     
     def _wrap_fp16_blocks_in_quantized_model(self):
-        """Clear RoPE caches for mixed precision models to prevent numerical instability"""
+        """Apply minimal RoPE fixes for mixed precision models"""
         if not hasattr(self.dit_model, 'blocks'):
             return
             
@@ -70,26 +71,31 @@ class FP8CompatibleDiT(torch.nn.Module):
         if not has_fp16_blocks:
             return
             
-        print(f"🎯 Mixed Precision Model detected - clearing RoPE caches")
+        print(f"🎯 Mixed Precision Model detected - applying minimal RoPE fix")
         
-        # Clear all RoPE LRU caches to prevent stale cached values
-        # This is the actual fix - cached RoPE freqs become invalid with mixed precision
-        cleared_count = 0
+        rope_count = 0
         
+        # Find RoPE modules the same way blockswap does - by NAME not class
         for name, module in self.dit_model.named_modules():
             if "rope" in name.lower() and hasattr(module, "get_axial_freqs"):
-                if hasattr(module.get_axial_freqs, 'cache_clear'):
-                    module.get_axial_freqs.cache_clear()
-                    cleared_count += 1
+                original_method = module.get_axial_freqs
+                
+                # Minimal wrapper - just prevent errors from propagating as NaN
+                def safe_rope(self, *args, **kwargs):
+                    try:
+                        return original_method(*args, **kwargs)
+                    except Exception:
+                        # Clear cache and retry - this usually fixes it
+                        if hasattr(original_method, 'cache_clear'):
+                            original_method.cache_clear()
+                        # Force recomputation in a safe dtype
+                        with torch.cuda.amp.autocast(enabled=False):
+                            return original_method(*args, **kwargs)
+                
+                module.get_axial_freqs = types.MethodType(safe_rope, module)
+                rope_count += 1
         
-        # Also check for RotaryEmbedding modules (different naming convention)
-        for module in self.dit_model.modules():
-            if 'RotaryEmbedding' in type(module).__name__:
-                if hasattr(module, 'get_axial_freqs') and hasattr(module.get_axial_freqs, 'cache_clear'):
-                    module.get_axial_freqs.cache_clear()
-                    cleared_count += 1
-        
-        print(f"   ✅ Cleared {cleared_count} RoPE caches for mixed precision stability")
+        print(f"   ✅ Protected {rope_count} RoPE computations from mixed precision errors")
             
     def _is_nadit_model(self) -> bool:
         """Detect if this is a NaDiT model (7B) with precise logic"""
