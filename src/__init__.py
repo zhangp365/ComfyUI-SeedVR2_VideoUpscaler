@@ -37,11 +37,16 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 '''
 # Progressive import system with fallback
+# ===== MODULE 0: Constants =====
+if MODULES_AVAILABLE['downloads']:
+    from src.utils.constants import (
+        get_base_cache_dir,
+    )
+
 # ===== MODULE 1: Downloads =====
 if MODULES_AVAILABLE['downloads']:
     from src.utils.downloads import (
         download_weight,
-        get_base_cache_dir
     )
     
 
@@ -111,8 +116,11 @@ if MODULES_AVAILABLE['comfyui_node']:
 
 # Export all available functions
 __all__ = [
+    # Constants
+    'get_base_cache_dir',
+
     # Utils
-    'download_weight', 'get_base_cache_dir',
+    'download_weight', 
     
     # Memory Management
     'get_vram_usage', 'clear_vram_cache', 'reset_vram_peak', 
