@@ -12,11 +12,12 @@ from typing import List, Tuple, Union, Any, Optional
 
 class FP8CompatibleDiT(torch.nn.Module):
     """
-    Universal DiT wrapper for quantization compatibility and optimizations
-    - FP8/INT4/INT8: Converts inputs to BFloat16 for computation
+    Wrapper for DiT models with automatic compatibility management + advanced optimizations
+    - FP8: Keeps native FP8 parameters, converts inputs/outputs
+    - FP16: Uses native FP16
     - Mixed Precision: Stabilizes RoPE for models with FP16 blocks
-    - RoPE: Converts FP8 frequencies to BFloat16 for compatibility
-    - Flash Attention: Optimizes attention layers when available
+    - RoPE: Converted from FP8 to BFloat16 only when detected as FP8
+    - Flash Attention: Automatic optimization of attention layers
     """
     
     def __init__(self, dit_model, skip_conversion=False):
@@ -26,7 +27,7 @@ class FP8CompatibleDiT(torch.nn.Module):
         self.is_fp8_model = self.model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
         self.is_fp16_model = self.model_dtype == torch.float16
         self.is_quantized_model = self.model_dtype not in (torch.float16, torch.float32, torch.bfloat16)
-        
+
         # Only convert if not already done (e.g., when reusing cached weights)
         if not skip_conversion and self.is_fp8_model:
             # Only FP8 models need RoPE frequency conversion
@@ -49,6 +50,29 @@ class FP8CompatibleDiT(torch.nn.Module):
         except:
             return torch.bfloat16
     
+    def _is_nadit_model(self) -> bool:
+        """Detect if this is a NaDiT model (7B) with precise logic"""
+        # Check module path for dit (not dit_v2) 
+        model_module = str(self.dit_model.__class__.__module__).lower()
+        return 'dit.nadit' in model_module and 'dit_v2' not in model_module
+
+    def _is_nadit_v2_model(self) -> bool:
+        """Detect if this is a NaDiT v2 model (3B) with precise logic"""
+        # Check module path for dit_v2
+        model_module = str(self.dit_model.__class__.__module__).lower()
+        return 'dit_v2' in model_module
+        
+    def _convert_rope_freqs(self) -> None:
+        """Convert RoPE frequency buffers for FP8 compatibility"""
+        converted = 0
+        for module in self.dit_model.modules():
+            if 'RotaryEmbedding' in type(module).__name__:
+                if hasattr(module, 'rope') and hasattr(module.rope, 'freqs'):
+                    if module.rope.freqs.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+                        module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
+                        converted += 1
+        print(f"   ✅ Converted {converted} RoPE frequency buffers")
+
     def _stabilize_rope_for_mixed_precision(self):
         """Stabilize RoPE computations in mixed precision models to prevent artifacts"""
         if not hasattr(self.dit_model, 'blocks'):
@@ -92,30 +116,7 @@ class FP8CompatibleDiT(torch.nn.Module):
                 rope_count += 1
         
         print(f"   ✅ Stabilized {rope_count} RoPE modules for artifact-free generation")
-            
-    def _is_nadit_model(self) -> bool:
-        """Detect if this is a NaDiT model (7B) with precise logic"""
-        # Check module path for dit (not dit_v2) 
-        model_module = str(self.dit_model.__class__.__module__).lower()
-        return 'dit.nadit' in model_module and 'dit_v2' not in model_module
 
-    def _is_nadit_v2_model(self) -> bool:
-        """Detect if this is a NaDiT v2 model (3B) with precise logic"""
-        # Check module path for dit_v2
-        model_module = str(self.dit_model.__class__.__module__).lower()
-        return 'dit_v2' in model_module
-        
-    def _convert_rope_freqs(self) -> None:
-        """Convert RoPE frequency buffers for FP8 compatibility"""
-        converted = 0
-        for module in self.dit_model.modules():
-            if 'RotaryEmbedding' in type(module).__name__:
-                if hasattr(module, 'rope') and hasattr(module.rope, 'freqs'):
-                    if module.rope.freqs.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                        module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
-                        converted += 1
-        print(f"   ✅ Converted {converted} RoPE frequency buffers")
-            
     def _apply_flash_attention_optimization(self) -> None:
         """🚀 FLASH ATTENTION OPTIMIZATION - 30-50% speedup of attention layers"""
         attention_layers_optimized = 0

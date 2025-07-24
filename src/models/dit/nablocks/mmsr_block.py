@@ -222,18 +222,6 @@ class NaMMSRTransformerBlock(MMWindowTransformerBlock):
         torch.LongTensor,
         torch.LongTensor,
     ]:
-        # === ADD DEBUG LOGGING FOR NON-BLOCKSWAP CASE ===
-        if hasattr(self, '_block_idx') and not hasattr(self, '_blockswap_wrapped'):
-            # This means we're not using blockswap
-            is_last_block = hasattr(self, 'is_last_layer') and self.is_last_layer
-            if is_last_block:
-                print(f"[NON-BLOCKSWAP] Last block forward: vid.dtype={vid.dtype}, device={vid.device}")
-                # Check parameter dtypes
-                param_dtypes = set()
-                for param in self.parameters():
-                    param_dtypes.add(str(param.dtype))
-                print(f"[NON-BLOCKSWAP] Last block param dtypes: {param_dtypes}")
-                
         hid_len = MMArg(
             cache("vid_len", lambda: vid_shape.prod(-1)),
             cache("txt_len", lambda: txt_shape.prod(-1)),
