@@ -115,13 +115,15 @@ class FP8CompatibleDiT(torch.nn.Module):
                 module._original_get_axial_freqs = original_method
                 
                 # Error handler that prevents NaN propagation by disabling autocast
-                def stable_rope_computation(self, *args, **kwargs):
-                    try:
-                        return self._original_get_axial_freqs(*args, **kwargs)
-                    except Exception:
-                        return call_rope_with_stability(self._original_get_axial_freqs, *args, **kwargs)
+                def make_stable_rope(orig):
+                    def stable_rope_computation(self, *args, **kwargs):
+                        try:
+                            return orig(*args, **kwargs)
+                        except Exception:
+                            return call_rope_with_stability(orig, *args, **kwargs)
+                    return stable_rope_computation
                 
-                module.get_axial_freqs = types.MethodType(stable_rope_computation, module)
+                module.get_axial_freqs = types.MethodType(make_stable_rope(original_method), module)
                 rope_count += 1
         
         if rope_count > 0:
