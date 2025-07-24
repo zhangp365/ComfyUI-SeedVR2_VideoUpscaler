@@ -15,8 +15,7 @@ def call_rope_with_stability(method, *args, **kwargs):
     Call RoPE method with stability fixes:
     1. Clear cache if available
     2. Disable autocast to prevent numerical issues
-    
-    This is the core fix that prevents artifacts in FP8/mixed precision models.
+    This prevents artifacts in FP8/mixed precision models.
     """
     if hasattr(method, 'cache_clear'):
         method.cache_clear()
@@ -44,13 +43,11 @@ class FP8CompatibleDiT(torch.nn.Module):
         # Only convert if not already done (e.g., when reusing cached weights)
         if not skip_conversion and self.is_fp8_model:
             # Only FP8 models need RoPE frequency conversion
-            # FP16 and BFloat16 models work as-is without conversion
             model_variant = "7B" if self._is_nadit_model() else "3B" if self._is_nadit_v2_model() else "Unknown"
             print(f"🎯 Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility")
             self._convert_rope_freqs()
             
-        # Apply RoPE stabilization to ALL models for numerical stability
-        # This prevents artifacts in FP8, mixed precision, and edge cases
+        # Apply RoPE stabilization for numerical stability
         self._stabilize_rope_computations()
 
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
@@ -88,11 +85,16 @@ class FP8CompatibleDiT(torch.nn.Module):
 
     def _stabilize_rope_computations(self):
         """
-        Stabilize RoPE computations to prevent artifacts.
+        Add error handling to RoPE computations to prevent artifacts.
         
-        Disables autocast during RoPE frequency calculations to prevent numerical
-        instability that can cause artifacts in FP8, mixed precision, and even
-        standard models under certain conditions.
+        Wraps the get_axial_freqs method of RoPE modules with a try-except handler.
+        During normal operation, uses the original cached method for performance.
+        Only on exceptions (e.g., numerical instability, NaN propagation) does it
+        intervene by clearing the cache and retrying the computation through
+        call_rope_with_stability.
+        
+        This prevents artifacts in FP8, mixed precision, and edge cases while
+        maintaining optimal performance for normal operations.
         """
         if not hasattr(self.dit_model, 'blocks'):
             return
@@ -114,16 +116,14 @@ class FP8CompatibleDiT(torch.nn.Module):
                 module._rope_wrapped = 'stability'
                 module._original_get_axial_freqs = original_method
                 
-                # Error handler that prevents NaN propagation by disabling autocast
-                def make_stable_rope(orig):
-                    def stable_rope_computation(self, *args, **kwargs):
-                        try:
-                            return orig(*args, **kwargs)
-                        except Exception:
-                            return call_rope_with_stability(orig, *args, **kwargs)
-                    return stable_rope_computation
+                # Error handler that prevents NaN propagation
+                def stable_rope_computation(self, *args, **kwargs):
+                    try:
+                        return original_method(*args, **kwargs)
+                    except Exception:
+                        return call_rope_with_stability(original_method, *args, **kwargs)
                 
-                module.get_axial_freqs = types.MethodType(make_stable_rope(original_method), module)
+                module.get_axial_freqs = types.MethodType(stable_rope_computation, module)
                 rope_count += 1
         
         if rope_count > 0:
