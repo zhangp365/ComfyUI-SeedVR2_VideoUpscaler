@@ -10,6 +10,20 @@ import types
 from typing import List, Tuple, Union, Any, Optional
 
 
+def call_rope_with_stability(method, *args, **kwargs):
+    """
+    Call RoPE method with stability fixes:
+    1. Clear cache if available
+    2. Disable autocast to prevent numerical issues
+    
+    This is the core fix that prevents artifacts in FP8/mixed precision models.
+    """
+    if hasattr(method, 'cache_clear'):
+        method.cache_clear()
+    
+    with torch.cuda.amp.autocast(enabled=False):
+        return method(*args, **kwargs)
+    
 class FP8CompatibleDiT(torch.nn.Module):
     """
     Wrapper for DiT models with automatic compatibility management + advanced optimizations
@@ -26,7 +40,6 @@ class FP8CompatibleDiT(torch.nn.Module):
         self.model_dtype = self._detect_model_dtype()
         self.is_fp8_model = self.model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
         self.is_fp16_model = self.model_dtype == torch.float16
-        self.is_quantized_model = self.model_dtype not in (torch.float16, torch.float32, torch.bfloat16)
 
         # Only convert if not already done (e.g., when reusing cached weights)
         if not skip_conversion and self.is_fp8_model:
@@ -36,9 +49,9 @@ class FP8CompatibleDiT(torch.nn.Module):
             print(f"🎯 Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility")
             self._convert_rope_freqs()
             
-        # Handle mixed precision models (quantized with FP16 blocks)
-        if self.is_quantized_model:
-            self._stabilize_rope_for_mixed_precision()
+        # Apply RoPE stabilization to ALL models for numerical stability
+        # This prevents artifacts in FP8, mixed precision, and edge cases
+        self._stabilize_rope_computations()
 
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
         self._apply_flash_attention_optimization()
@@ -73,49 +86,46 @@ class FP8CompatibleDiT(torch.nn.Module):
                         converted += 1
         print(f"   ✅ Converted {converted} RoPE frequency buffers")
 
-    def _stabilize_rope_for_mixed_precision(self):
-        """Stabilize RoPE computations in mixed precision models to prevent artifacts"""
+    def _stabilize_rope_computations(self):
+        """
+        Stabilize RoPE computations to prevent artifacts.
+        
+        Disables autocast during RoPE frequency calculations to prevent numerical
+        instability that can cause artifacts in FP8, mixed precision, and even
+        standard models under certain conditions.
+        """
         if not hasattr(self.dit_model, 'blocks'):
             return
-            
-        # Check if we have mixed precision (quantized model with FP16 blocks)
-        has_fp16_blocks = False
         
-        for block in self.dit_model.blocks:
-            try:
-                if next(block.parameters()).dtype == torch.float16:
-                    has_fp16_blocks = True
-                    break
-            except:
-                continue
-        
-        if not has_fp16_blocks:
-            return
-            
-        print(f"🎯 Mixed Precision Model detected - stabilizing RoPE computations")
+        print(f"🎯 Stabilizing RoPE computations for numerical stability")
         
         rope_count = 0
         
-        # Wrap RoPE modules to handle mixed precision numerical instability
+        # Wrap RoPE modules to handle numerical instability
         for name, module in self.dit_model.named_modules():
             if "rope" in name.lower() and hasattr(module, "get_axial_freqs"):
+                # Check if already wrapped
+                if hasattr(module, '_rope_wrapped'):
+                    continue
+                    
                 original_method = module.get_axial_freqs
                 
-                # Minimal error handler - prevents NaN propagation
+                # Mark as wrapped and store original
+                module._rope_wrapped = 'stability'
+                module._original_get_axial_freqs = original_method
+                
+                # Error handler that prevents NaN propagation by disabling autocast
                 def stable_rope_computation(self, *args, **kwargs):
                     try:
-                        return original_method(*args, **kwargs)
+                        return self._original_get_axial_freqs(*args, **kwargs)
                     except Exception:
-                        # Clear stale cache and retry without autocast
-                        if hasattr(original_method, 'cache_clear'):
-                            original_method.cache_clear()
-                        with torch.cuda.amp.autocast(enabled=False):
-                            return original_method(*args, **kwargs)
+                        return call_rope_with_stability(self._original_get_axial_freqs, *args, **kwargs)
                 
                 module.get_axial_freqs = types.MethodType(stable_rope_computation, module)
                 rope_count += 1
         
-        print(f"   ✅ Stabilized {rope_count} RoPE modules for artifact-free generation")
+        if rope_count > 0:
+            print(f"   ✅ Stabilized {rope_count} RoPE modules")
 
     def _apply_flash_attention_optimization(self) -> None:
         """🚀 FLASH ATTENTION OPTIMIZATION - 30-50% speedup of attention layers"""
