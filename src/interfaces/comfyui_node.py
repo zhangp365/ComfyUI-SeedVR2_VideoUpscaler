@@ -7,10 +7,7 @@ import time
 import torch
 from typing import Tuple, Dict, Any
 
-from src.utils.constants import get_base_cache_dir
-from src.utils.downloads import download_weight
-from src.utils.model_registry import get_available_models, DEFAULT_MODEL
-from src.utils.constants import get_script_directory
+from src.utils.downloads import download_weight, get_base_cache_dir
 from src.core.model_manager import configure_runner
 from src.core.generation import generation_loop
 from src.optimization.memory_manager import fast_model_cleanup, fast_ram_cleanup
@@ -25,7 +22,7 @@ from src.optimization.memory_manager import (
 # Import ComfyUI progress reporting
 from server import PromptServer
 
-script_directory = get_script_directory()
+script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class SeedVR2:
     """
@@ -56,11 +53,17 @@ class SeedVR2:
             Dictionary defining input parameters, types, and validation
         """
         return {
-                "required": {
+            "required": {
                 "images": ("IMAGE", ),
-                "model": (get_available_models(), {
-                    "default": DEFAULT_MODEL,
-                    "tooltip": "Model variants with different sizes and precisions. Models will automatically download on first use. Additional models can be added to the ComfyUI models folder."
+                "model": ([
+                    "seedvr2_ema_3b_fp16.safetensors", 
+                    "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+                    "seedvr2_ema_7b_fp16.safetensors",
+                    "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+                    "seedvr2_ema_7b_sharp_fp16.safetensors",
+                    "seedvr2_ema_7b_sharp_fp8_e4m3fn.safetensors"
+                ], {
+                    "default": "seedvr2_ema_3b_fp8_e4m3fn.safetensors"
                 }),
                 "seed": ("INT", {
                     "default": 100, 

@@ -23,6 +23,8 @@ from .performance import (
 # Compatibility functions and classes
 from .compatibility import (
     FP8CompatibleDiT,
+    apply_fp8_compatibility_hooks,
+    remove_compatibility_hooks,
 )
 
 __all__ = [
@@ -41,5 +43,7 @@ __all__ = [
     
     # Compatibility
     "FP8CompatibleDiT",
+    "apply_fp8_compatibility_hooks",
+    "remove_compatibility_hooks",
 ] 
 '''
