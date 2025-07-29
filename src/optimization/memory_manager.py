@@ -180,62 +180,32 @@ def clear_rope_lru_caches(model) -> int:
 
 
 def fast_model_cleanup(model):
-    """Aggressive model cleanup that actually frees memory"""
+    """Fast model cleanup without logs"""
     if model is None:
         return
     
-    # First move to CPU if on GPU
-    if next(model.parameters(), None) is not None:
-        device = next(model.parameters()).device
-        if device.type == 'cuda':
-            model.to("cpu")
+    # Move to CPU
+    model.to("cpu")
     
-    # Aggressively clear all parameters and buffers
+    # Clear parameters and buffers recursively
     def clear_recursive(m):
-        # Clear children first
         for child in m.children():
             clear_recursive(child)
-        
-        # Delete all parameters
-        for name, param in list(m.named_parameters(recurse=False)):
+        for param in m.parameters():
             if param is not None:
-                # Release the underlying storage
-                if param.data.numel() > 0:
-                    param.data.set_()  # This releases the storage
+                param.data = param.data.cpu()
                 param.grad = None
-                delattr(m, name.split('.')[-1])
-        
-        # Delete all buffers
-        for name, buffer in list(m.named_buffers(recurse=False)):
+        for buffer in m.buffers():
             if buffer is not None:
-                # Release the underlying storage
-                if buffer.numel() > 0:
-                    buffer.set_()  # This releases the storage
-                delattr(m, name.split('.')[-1])
-        
-        # Clear any other tensor attributes
-        for attr_name in list(vars(m).keys()):
-            attr = getattr(m, attr_name, None)
-            if torch.is_tensor(attr):
-                if attr.numel() > 0:
-                    attr.set_()  # Release storage
-                delattr(m, attr_name)
+                buffer.data = buffer.data.cpu()
     
     clear_recursive(model)
-    
-    # Clear the module dict to break circular references
-    model._modules.clear()
 
 
 def fast_ram_cleanup():
-    """Aggressive RAM cleanup"""
-    # Clear Python's internal caches
-    import sys
-    sys.intern.clear() if hasattr(sys.intern, 'clear') else None
-    
-    # Multiple aggressive garbage collection passes
-    for _ in range(3):
-        gc.collect(2)  # Collect all generations
+    """Fast RAM cleanup without excessive logging"""
+    # Garbage collection
+    gc.collect()
     
     # Clear CUDA cache
     if torch.cuda.is_available():
@@ -246,14 +216,6 @@ def fast_ram_cleanup():
     # Clear PyTorch internal caches
     try:
         torch._C._clear_cache()
-    except:
-        pass
-    
-    # Force Python to release memory back to OS (Linux)
-    try:
-        import ctypes
-        libc = ctypes.CDLL("libc.so.6")
-        libc.malloc_trim(0)
     except:
         pass
     
