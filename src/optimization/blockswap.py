@@ -20,8 +20,13 @@ import psutil
 import gc
 import comfy.model_management as mm
 from typing import Dict, Any, List, Tuple, Optional, Union
-from src.optimization.memory_manager import get_vram_usage
 
+try:
+    from src.optimization.memory_manager import get_vram_usage
+    COMFYUI_AVAILABLE = True
+except:
+    COMFYUI_AVAILABLE = False
+    pass
 
 
 def get_module_memory_mb(module: torch.nn.Module) -> float:
@@ -99,8 +104,12 @@ class BlockSwapDebugger:
         if self.enabled:
             # GPU Memory
             if torch.cuda.is_available():
-                allocated_gb, reserved_gb, peak_gb = get_vram_usage()
-                vram_info = f"VRAM: {allocated_gb:.2f}/{reserved_gb:.2f}GB (peak: {peak_gb:.2f}GB)"
+                
+                if COMFYUI_AVAILABLE:
+                    allocated_gb, reserved_gb, peak_gb = get_vram_usage()
+                    vram_info = f"VRAM: {allocated_gb:.2f}/{reserved_gb:.2f}GB (peak: {peak_gb:.2f}GB)"
+                else:
+                    vram_info = f"VRAM: INFO NOT AVAILABLE"
                 self.vram_history.append(allocated_gb)
             else:
                 vram_info = "VRAM: CPU mode"
