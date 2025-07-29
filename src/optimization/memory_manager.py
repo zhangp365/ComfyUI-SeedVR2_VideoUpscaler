@@ -12,8 +12,14 @@ import time
 from typing import Tuple, Optional
 from src.common.cache import Cache
 from src.models.dit_v2.rope import RotaryEmbeddingBase
-from comfy import model_management as mm
 
+try:
+    from comfy import model_management as mm
+    COMFYUI_AVAILABLE = True
+except:
+    COMFYUI_AVAILABLE = False
+    pass
+    
 def get_basic_vram_info():
     """🔍 Méthode basique avec PyTorch natif"""
     if not torch.cuda.is_available():
@@ -385,6 +391,7 @@ def clear_all_caches(runner, debugger=None) -> int:
     # Clear CUDA cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        mm.soft_empty_cache()
+        if COMFYUI_AVAILABLE:
+            mm.soft_empty_cache()
 
     return cleaned_items
