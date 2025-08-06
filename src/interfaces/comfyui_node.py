@@ -5,6 +5,7 @@
 import os
 import time
 import torch
+import platform
 from typing import Tuple, Dict, Any
 
 from src.utils.downloads import download_weight, get_base_cache_dir
@@ -155,7 +156,7 @@ class SeedVR2:
                 cleanup_blockswap(self.runner, keep_state_for_cache=True)
             
             # Clear all caches
-            if self.runner:              
+            if self.runner:
                 clear_all_caches(self.runner, debugger)
             
         else:
@@ -335,7 +336,7 @@ class SeedVR2BlockSwap:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Use non-blocking GPU transfers for better performance.",
+                        "tooltip": "Use non-blocking GPU transfers for better performance.\n(This will always False on macOS to prevent Nan tensors)",
                     },
                 ),
                 "offload_io_components": (
@@ -399,11 +400,12 @@ The actual memory savings depend on your specific model architecture and will be
         cache_model,
         enable_debug,
     ):
+        Use_non_blocking = False if platform.system() == "Darwin" else use_non_blocking
         if blocks_to_swap > 0 or offload_io_components:
             configs = []
             if blocks_to_swap > 0:
                 configs.append(f"{blocks_to_swap} blocks")
-            if use_non_blocking:
+            if Use_non_blocking:
                 configs.append("non blocking")
             if offload_io_components:
                 configs.append("I/O components")
@@ -413,7 +415,7 @@ The actual memory savings depend on your specific model architecture and will be
         return (
             {
                 "blocks_to_swap": blocks_to_swap,
-                "use_non_blocking": use_non_blocking,
+                "use_non_blocking": Use_non_blocking,
                 "offload_io_components": offload_io_components,
                 "cache_model": cache_model,
                 "enable_debug": enable_debug,
