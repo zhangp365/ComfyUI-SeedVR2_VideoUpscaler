@@ -22,6 +22,7 @@ from diffusers.models.normalization import RMSNorm
 from einops import rearrange
 from torch import Tensor, nn
 from torch.nn import Conv3d
+import platform
 
 from .context_parallel_lib import cache_send_recv, get_cache_size
 from .global_config import get_norm_limit
@@ -120,7 +121,10 @@ class InflatedCausalConv3d(Conv3d):
         if prev_cache is not None:
             prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
         if preserve_vram:
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             #print("empty cache 0")
         # Loop Fwd.
         cache = None
@@ -166,14 +170,20 @@ class InflatedCausalConv3d(Conv3d):
             cache = next_cache
         # ADD BY NUMZ
         if preserve_vram:
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             #print("empty cache 1")
             #time.sleep(2)
         try:
             output = torch.cat(x, split_dim)
         except Exception as e:
             print("OOM second chance")
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             time.sleep(2)
             output = torch.cat(x, split_dim)
         return output
@@ -355,13 +365,19 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     except Exception as e:
                         print("OOM Second Chance : Group Norm")
-                        torch.cuda.empty_cache()
+                        if platform.system() == "Darwin":
+                            torch.mps.empty_cache()
+                        else:
+                            torch.cuda.empty_cache()
                         time.sleep(2)
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     x[i] = x[i].to(input_dtype)
                 # ADD BY NUMZ
                 if preserve_vram:
-                    torch.cuda.empty_cache()
+                    if platform.system() == "Darwin":
+                        torch.mps.empty_cache()
+                    else:
+                        torch.cuda.empty_cache()
                 x = torch.cat(x, dim=1)
             else:
                 x = norm_layer(x)

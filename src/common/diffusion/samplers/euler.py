@@ -21,6 +21,7 @@ from typing import Callable
 import torch
 from einops import rearrange
 from torch.nn import functional as F
+import platform
 
 #from ....models.dit_v2 import na
 
@@ -71,8 +72,12 @@ class EulerSampler(Sampler):
             
             # Nettoyer les tenseurs temporaires
             del pred
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                if torch.mps.is_available():
+                    torch.mps.empty_cache()
+            else:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
             i += 1
             progress.update()
@@ -125,3 +130,4 @@ class EulerSampler(Sampler):
         pred_x_s = pred_x_s.where(s >= 0, pred_x_0)
         pred_x_s = pred_x_s.where(s <= T, pred_x_T)
         return pred_x_s
+    

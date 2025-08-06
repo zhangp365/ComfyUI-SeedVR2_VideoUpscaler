@@ -18,6 +18,7 @@ Key Features:
 import os
 import time
 import torch
+import platform
 from omegaconf import DictConfig, OmegaConf
 
 # Import SafeTensors with fallback
@@ -167,6 +168,8 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=False, bl
     
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if platform.system() == "Darwin":
+        device = "mps"
     
     # Configure models
     checkpoint_path = os.path.join(base_cache_dir, f'./{model}')
@@ -376,11 +379,11 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config, prese
     """
     
     # Create vae model
-    
+    if platform.system() == "Darwin":
+        config.vae.dtype = "bfloat16"
     dtype = getattr(torch, config.vae.dtype)
     t = time.time()
     loading_device = "cpu" if preserve_vram else device
-    
     with torch.device(device):
         runner.vae = create_object(config.vae.model)
     if debug:
@@ -432,6 +435,10 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config, prese
         print(f"🔄 CONFIG VAE : VAE LOAD TIME: {time.time() - t} seconds")
     t = time.time()
     runner.vae.load_state_dict(state)
+    
+    if platform.system() == "Darwin":
+        runner.vae = runner.vae.to(dtype=torch.bfloat16)
+    
     if state_loading_device == "cpu":
         runner.vae.to(device)
     if 'state' in locals():

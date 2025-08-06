@@ -17,7 +17,7 @@ from torchvision.transforms import CenterCrop, Compose, InterpolationMode, Resiz
 
 from .area_resize import AreaResize
 from .side_resize import SideResize
-
+import platform
 
 def NaResize(
     resolution: int,
@@ -25,24 +25,25 @@ def NaResize(
     downsample_only: bool,
     interpolation: InterpolationMode = InterpolationMode.BICUBIC,
 ):
+    Interpolation = InterpolationMode.BILINEAR if platform.system() == "Darwin" else interpolation
     if mode == "area":
         return AreaResize(
             max_area=resolution**2,
             downsample_only=downsample_only,
-            interpolation=interpolation,
+            interpolation=Interpolation,
         )
     if mode == "side":
         return SideResize(
             size=resolution,
             downsample_only=downsample_only,
-            interpolation=interpolation,
+            interpolation=Interpolation,
         )
     if mode == "square":
         return Compose(
             [
                 Resize(
                     size=resolution,
-                    interpolation=interpolation,
+                    interpolation=Interpolation,
                 ),
                 CenterCrop(resolution),
             ]

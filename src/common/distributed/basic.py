@@ -21,7 +21,7 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-
+import platform
 
 def get_global_rank() -> int:
     """
@@ -48,7 +48,10 @@ def get_device() -> torch.device:
     """
     Get current rank device.
     """
-    return torch.device("cuda", get_local_rank())
+    device = "cuda"
+    if platform.system() == "Darwin":
+        device = "mps"
+    return torch.device(device, get_local_rank())
 
 
 def barrier_if_distributed(*args, **kwargs):
@@ -82,3 +85,4 @@ def convert_to_ddp(module: torch.nn.Module, **kwargs) -> DistributedDataParallel
         output_device=get_local_rank(),
         **kwargs,
     )
+    

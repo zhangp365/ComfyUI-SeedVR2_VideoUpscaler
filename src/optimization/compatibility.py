@@ -7,6 +7,7 @@ Extracted from: seedvr2.py (lines 1045-1630)
 
 import time
 import torch
+import platform
 from typing import List, Tuple, Union, Any, Optional
 
 
@@ -97,13 +98,21 @@ class FP8CompatibleDiT(torch.nn.Module):
                 # Convert all parameters of this module to BFloat16
                 for param_name, param in module.named_parameters():
                     if param.dtype != torch.bfloat16:
-                        param.data = param.data.to(torch.bfloat16)
+                        if param.device.type == "mps":
+                            param_data = param.data.to("cpu").to(torch.bfloat16).to("mps")
+                        else:
+                            param_data = param.data.to(torch.bfloat16)
+                        param.data = param_data
                         rope_count += 1
                         
                 # Also convert buffers (non-trainable parameters)
                 for buffer_name, buffer in module.named_buffers():
                     if buffer.dtype != torch.bfloat16:
-                        buffer.data = buffer.data.to(torch.bfloat16)
+                        if param.device.type == "mps":
+                            buffer_data = buffer.data.to("cpu").to(torch.bfloat16).to("mps")
+                        else:
+                            buffer_data = buffer.data.to(torch.bfloat16)
+                        buffer.data = buffer_data
                         rope_count += 1
     
     def _force_nadit_bfloat16(self) -> None:
@@ -118,13 +127,21 @@ class FP8CompatibleDiT(torch.nn.Module):
             if original_dtype is None:
                 original_dtype = param.dtype
             if param.dtype != torch.bfloat16:
-                param.data = param.data.to(torch.bfloat16)
+                if param.device.type == "mps":
+                    param_data = param.data.to("cpu").to(torch.bfloat16).to("mps")
+                else:
+                    param_data = param.data.to(torch.bfloat16)
+                param.data = param_data
                 converted_count += 1
         
         # Also convert buffers
         for name, buffer in self.dit_model.named_buffers():
             if buffer.dtype != torch.bfloat16:
-                buffer.data = buffer.data.to(torch.bfloat16)
+                if param.device.type == "mps":
+                    buffer_data = buffer.data.to("cpu").to(torch.bfloat16).to("mps")
+                else:
+                    buffer_data = buffer.data.to(torch.bfloat16)
+                buffer.data = buffer_data
                 converted_count += 1
         
         print(f"   ✅ Converted {converted_count} parameters/buffers from {original_dtype} to BFloat16")
@@ -301,17 +318,24 @@ class FP8CompatibleDiT(torch.nn.Module):
             k = k.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             v = v.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             
-            # Use optimized SDPA
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=True,
-                enable_math=True,
-                enable_mem_efficient=True
-            ):
+            if platform.system() == "Darwin":
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=0.0,
                     is_causal=False
                 )
+            else:
+                # Use optimized SDPA
+                with torch.backends.cuda.sdp_kernel(
+                    enable_flash=True,
+                    enable_math=True,
+                    enable_mem_efficient=True
+                ):
+                    attn_output = torch.nn.functional.scaled_dot_product_attention(
+                        q, k, v,
+                        dropout_p=0.0,
+                        is_causal=False
+                    )
             
             # Reshape back
             attn_output = attn_output.transpose(1, 2).contiguous().view(
@@ -483,3 +507,4 @@ def remove_compatibility_hooks(hooks: List[Tuple[str, Any]]) -> None:
     
     print(f"🧹 Removed {removed_count}/{len(hooks)} compatibility hooks")
 
+    

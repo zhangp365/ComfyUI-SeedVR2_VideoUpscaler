@@ -7,23 +7,25 @@ import sys
 import os
 import argparse
 import time
+import platform
 import multiprocessing as mp
 # Ensure safe CUDA usage with multiprocessing
 if mp.get_start_method(allow_none=True) != 'spawn':
     mp.set_start_method('spawn', force=True)
 # -------------------------------------------------------------
 # 1) Gestion VRAM (cudaMallocAsync) déjà en place
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+if platform.system() != "Darwin":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
-# 2) Pré-parse de la ligne de commande pour récupérer --cuda_device
-_pre_parser = argparse.ArgumentParser(add_help=False)
-_pre_parser.add_argument("--cuda_device", type=str, default=None)
-_pre_args, _ = _pre_parser.parse_known_args()
-if _pre_args.cuda_device is not None:
-    device_list_env = [x.strip() for x in _pre_args.cuda_device.split(',') if x.strip()!='']
-    if len(device_list_env) == 1:
-        # Single GPU: restrict visibility now
-        os.environ["CUDA_VISIBLE_DEVICES"] = device_list_env[0]
+    # 2) Pré-parse de la ligne de commande pour récupérer --cuda_device
+    _pre_parser = argparse.ArgumentParser(add_help=False)
+    _pre_parser.add_argument("--cuda_device", type=str, default=None)
+    _pre_args, _ = _pre_parser.parse_known_args()
+    if _pre_args.cuda_device is not None:
+        device_list_env = [x.strip() for x in _pre_args.cuda_device.split(',') if x.strip()!='']
+        if len(device_list_env) == 1:
+            # Single GPU: restrict visibility now
+            os.environ["CUDA_VISIBLE_DEVICES"] = device_list_env[0]
 
 # -------------------------------------------------------------
 # 3) Imports lourds (torch, etc.) après la configuration env
@@ -213,10 +215,11 @@ def save_frames_to_png(frames_tensor, output_dir, base_name, debug=False):
 
 def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
     """Worker process that performs upscaling on a slice of frames using a dedicated GPU."""
-    # 1. Limit CUDA visibility to the chosen GPU BEFORE importing torch-heavy deps
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
-    # Keep same cudaMallocAsync setting
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+    if platform.system() != "Darwin":
+        # 1. Limit CUDA visibility to the chosen GPU BEFORE importing torch-heavy deps
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+        # Keep same cudaMallocAsync setting
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
     import torch  # local import inside subprocess
     from src.core.model_manager import configure_runner
@@ -330,7 +333,8 @@ def parse_arguments():
                         help="Enable VRAM preservation mode")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug logging")
-    parser.add_argument("--cuda_device", type=str, default=None,
+    if platform.system() != "Darwin":
+        parser.add_argument("--cuda_device", type=str, default=None,
                         help="CUDA device id(s). Single id (e.g., '0') or comma-separated list '0,1' for multi-GPU")
     
     return parser.parse_args()
@@ -349,11 +353,14 @@ def main():
             print(f"   {key}: {value}")
     
     if args.debug:
-        # Show actual CUDA device visibility
-        print(f"🖥️ CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}")
-        if torch.cuda.is_available():
-            print(f"🖥️ torch.cuda.device_count(): {torch.cuda.device_count()}")
-            print(f"🖥️ Using device index 0 inside script (mapped to selected GPU)")
+        if platform.system() == "Darwin":
+            print("🖥️ You are running on macOS and will use the MPS backend!")
+        else:
+            # Show actual CUDA device visibility
+            print(f"🖥️ CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}")
+            if torch.cuda.is_available():
+                print(f"🖥️ torch.cuda.device_count(): {torch.cuda.device_count()}")
+                print(f"🖥️ Using device index 0 inside script (mapped to selected GPU)")
     
     try:
         # Ensure --output is a directory when using PNG format
@@ -380,7 +387,11 @@ def main():
             # print(f"📊 Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB") # may initialize cuda
         
         # Parse GPU list
-        device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
+        if platform.system() == "Darwin":
+            device_list = ["0"]
+        else:
+            device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
+        
         if args.debug:
             print(f"🚀 Using devices: {device_list}")
         processing_start = time.time()
@@ -390,7 +401,8 @@ def main():
         
         if args.debug:
             print(f"🔄 Generation time: {generation_time:.2f}s")
-            print(f"📊 Peak VRAM usage: {torch.cuda.max_memory_allocated() / 1024**3:.2f}GB")
+            if platform.system() != "Darwin":
+                print(f"📊 Peak VRAM usage: {torch.cuda.max_memory_allocated() / 1024**3:.2f}GB")
             print(f"📊 Result shape: {result.shape}, dtype: {result.dtype}")
         
         # After generation_time calculation, choose saving method

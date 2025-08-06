@@ -29,6 +29,7 @@ from diffusers.utils import is_torch_version
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
 from ....common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
+import platform
 
 from ....common.distributed.advanced import get_sequence_parallel_world_size
 from ....common.logger import get_logger
@@ -134,7 +135,10 @@ class Upsample3D(Upsample2D):
             hidden_states = [hidden_states]
         # ADD BY NUMZ
         if preserve_vram:
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
         for i in range(len(hidden_states)):
             hidden_states[i] = self.upscale_conv(hidden_states[i])
             hidden_states[i] = rearrange(
@@ -153,7 +157,10 @@ class Upsample3D(Upsample2D):
             hidden_states = hidden_states[0]
         # ADD BY NUMZ
         if preserve_vram:
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
         if self.use_conv:
             if self.name == "conv":
                 hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
@@ -310,7 +317,10 @@ class ResnetBlock3D(ResnetBlock2D):
             hidden_states = self.nonlinearity(hidden_states)
         except Exception as e:
             print("OOM second chance")
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             time.sleep(1)
             hidden_states = self.nonlinearity(hidden_states)
 
@@ -1362,3 +1372,4 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         for m in self.modules():
             if isinstance(m, InflatedCausalConv3d):
                 m.set_memory_limit(conv_max_mem if conv_max_mem is not None else float("inf"))
+                

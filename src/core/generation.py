@@ -20,6 +20,7 @@ import os
 import gc
 import torch
 import time
+import platform
 from torchvision.transforms import Compose, Lambda, Normalize
 
 
@@ -70,6 +71,8 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
         - Advanced inference optimization
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if platform.system() == "Darwin":
+        device = "mps"
     
     # Adaptive dtype detection for optimal performance
     model_dtype = next(runner.dit.parameters()).dtype
@@ -89,12 +92,17 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     def _move_to_cuda(x):
         """Move tensors to CUDA with adaptive optimal dtype"""
         return [i.to(device, dtype=dtype) for i in x]
-
+    
     # Memory optimization: Generate noise once and reuse to save VRAM
-    with torch.cuda.device(device):
+    if platform.system() == "Darwin":
         base_noise = torch.randn_like(cond_latents[0], dtype=dtype)
         noises = [base_noise]
         aug_noises = [base_noise * 0.1 + torch.randn_like(base_noise) * 0.05]
+    else:
+        with torch.cuda.device(device):
+            base_noise = torch.randn_like(cond_latents[0], dtype=dtype)
+            noises = [base_noise]
+            aug_noises = [base_noise * 0.1 + torch.randn_like(base_noise) * 0.05]
     
     # Move tensors with adaptive dtype (optimized for FP8/FP16/BFloat16)
     noises, aug_noises, cond_latents = _move_to_cuda(noises), _move_to_cuda(aug_noises), _move_to_cuda(cond_latents)
@@ -126,7 +134,11 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Use adaptive autocast for optimal performance
     with torch.no_grad():
-        with torch.autocast("cuda", autocast_dtype, enabled=True):
+        d = "cuda"
+        if platform.system() == "Darwin":
+            d = "mps"
+            
+        with torch.autocast(d, autocast_dtype, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
                 conditions=conditions,
@@ -210,6 +222,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         - Real-time progress reporting
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if platform.system() == "Darwin":
+        device = "mps"
 
     # Log BlockSwap status
     if block_swap_config:
@@ -246,7 +260,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         vae_dtype = torch.bfloat16
 
     # Optimization tips for users
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() or torch.mps.is_available():
         total_frames = len(images)
         optimal_batches = [x for x in [i for i in range(1, 200) if i % 4 == 1] if x <= total_frames]
         if optimal_batches:
@@ -379,7 +393,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             tps_vae = time.time()
             if debug:
                 print(f"🔄 VAE dtype: {autocast_dtype}")
-            with torch.autocast("cuda", autocast_dtype, enabled=True):
+            d = "cuda"
+            if platform.system() == "Darwin":
+                d = "mps"
+            with torch.autocast(d, autocast_dtype, enabled=True):
                 cond_latents = runner.vae_encode([transformed_video])
             if debug:
                 print(f"🔄 VAE encode time: {time.time() - tps_vae} seconds")
@@ -436,7 +453,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
             # Clean VRAM after each batch when preserve_vram is active (but not with blockswap)
             if preserve_vram and not (block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0):
-                torch.cuda.empty_cache()
+                if platform.system() == "Darwin":
+                    torch.mps.empty_cache()
+                else:
+                    torch.cuda.empty_cache()
             #del transformed_video
             #clear_vram_cache()
             # Log memory state at the end of each batch
@@ -452,7 +472,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         text_neg_embeds = text_neg_embeds.to("cpu")
         runner.dit.to("cpu")
         runner.vae.to("cpu")
-        torch.cuda.empty_cache()
+        if platform.system() == "Darwin":
+            torch.mps.empty_cache()
+        else:
+            torch.cuda.empty_cache()
         #del text_pos_embeds, text_neg_embeds
         #clear_vram_cache()
 
@@ -503,7 +526,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             
             # Nettoyage immédiat VRAM
             del current_block, block_result
-            torch.cuda.empty_cache()
+            if platform.system() == "Darwin":
+                torch.mps.empty_cache()
+            else:
+                torch.cuda.empty_cache()
             
         print(f"✅ Pre-allocation strategy completed: {final_video_images.shape}")
     else:

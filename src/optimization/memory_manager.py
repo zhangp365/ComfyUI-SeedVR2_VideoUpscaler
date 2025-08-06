@@ -9,6 +9,8 @@ import os
 import torch
 import gc
 import time
+import platform
+import psutil
 from typing import Tuple, Optional
 from src.common.cache import Cache
 from src.models.dit_v2.rope import RotaryEmbeddingBase
@@ -21,12 +23,16 @@ except:
     pass
     
 def get_basic_vram_info():
-    """🔍 Méthode basique avec PyTorch natif"""
-    if not torch.cuda.is_available():
-        return {"error": "CUDA not available"}
-    
-    # Mémoire libre et totale (en bytes)
-    free_memory, total_memory = torch.cuda.mem_get_info()
+    if platform.system() == "Darwin":
+        mem = psutil.virtual_memory()
+        free_memory = mem.total - mem.used
+        total_memory = mem.total
+    else:
+        """🔍 Méthode basique avec PyTorch natif"""
+        if not torch.cuda.is_available():
+            return {"error": "CUDA not available"}
+        # Mémoire libre et totale (en bytes)
+        free_memory, total_memory = torch.cuda.mem_get_info()
     
     # Conversion en GB
     free_gb = free_memory / (1024**3)
@@ -39,7 +45,10 @@ def get_basic_vram_info():
 
 # Utilisation
 vram_info = get_basic_vram_info()
-print(f"VRAM libre: {vram_info['free_gb']:.2f} GB")
+if "error" not in vram_info:
+    print(f"📊 Initial VRAM status: {vram_info['free_gb']:.2f}GB free / {vram_info['total_gb']:.2f}GB total")
+else:
+    print(f"⚠️ VRAM check: {vram_info['error']} - SeedVR2 requires an NVIDIA GPU")
 
 def get_vram_usage() -> Tuple[float, float, float]:
     """
@@ -49,6 +58,11 @@ def get_vram_usage() -> Tuple[float, float, float]:
         tuple: (allocated_gb, reserved_gb, max_allocated_gb)
                Returns (0, 0, 0) if CUDA not available
     """
+    if platform.system() == "Darwin":
+        allocated = torch.mps.current_allocated_memory() / (1024**3)
+        reserved = torch.mps.driver_allocated_memory() / (1024**3)
+        max_allocated = 0
+        return allocated, reserved, max_allocated
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated() / (1024**3)
         reserved = torch.cuda.memory_reserved() / (1024**3)
@@ -62,9 +76,12 @@ def clear_vram_cache() -> None:
     Clear VRAM cache and run garbage collection
     """
     print("🧹 Clearing VRAM cache...")
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        gc.collect()
+    if platform.system() == "Darwin":
+        torch.mps.empty_cache()
+    else:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    gc.collect()
 
 
 def reset_vram_peak() -> None:
@@ -245,10 +262,13 @@ def fast_ram_cleanup():
     # Garbage collection
     gc.collect()
     
-    # Clear CUDA cache
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+    if platform.system() == "Darwin":
+        torch.mps.empty_cache()
+    else:
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
     
     # Clear PyTorch internal caches
     try:
@@ -293,7 +313,7 @@ def clear_all_caches(runner, debugger=None) -> int:
         for key, value in list(runner.cache.cache.items()):
             if torch.is_tensor(value):
                 # Force deallocation of tensor storage
-                if value.is_cuda:
+                if value.is_cuda or value.is_mps:
                     value.data = value.data.cpu()
                 value.grad = None
                 if value.numel() > 0:
@@ -301,7 +321,7 @@ def clear_all_caches(runner, debugger=None) -> int:
             elif isinstance(value, (list, tuple)):
                 for item in value:
                     if torch.is_tensor(item):
-                        if item.is_cuda:
+                        if item.is_cuda or item.is_mps:
                             item.data = item.data.cpu()
                         item.grad = None
                         if item.numel() > 0:
@@ -388,10 +408,16 @@ def clear_all_caches(runner, debugger=None) -> int:
     # Force garbage collection
     gc.collect(2)  # Collect all generations
     
-    # Clear CUDA cache
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if platform.system() == "Darwin":
+        # Clear MPS cache
+        torch.mps.empty_cache()
         if COMFYUI_AVAILABLE:
             mm.soft_empty_cache()
+    else:
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if COMFYUI_AVAILABLE:
+                mm.soft_empty_cache()
 
     return cleaned_items

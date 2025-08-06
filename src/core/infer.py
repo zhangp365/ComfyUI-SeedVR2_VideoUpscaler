@@ -19,6 +19,7 @@ from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
 from src.optimization.memory_manager import clear_vram_cache
+import platform
 
 from src.common.diffusion import (
     classifier_free_guidance_dispatcher,
@@ -170,6 +171,8 @@ class VideoDiffusionInfer():
             #t = time.time()
             device = get_device()
             dtype = getattr(torch, self.config.vae.dtype)
+            if platform.system() == "Darwin":
+                dtype = next(self.vae.parameters()).dtype
             scale = self.config.vae.scaling_factor
             shift = self.config.vae.get("shifting_factor", 0.0)
 
@@ -262,6 +265,11 @@ class VideoDiffusionInfer():
 
     def get_vram_usage(self):
         """Obtenir l'utilisation VRAM actuelle (allouée et réservée)"""
+        if platform.system() == "Darwin":
+            allocated = torch.mps.current_allocated_memory() / (1024**3)
+            reserved = torch.mps.driver_allocated_memory() / (1024**3)
+            max_allocated = 0
+            return allocated, reserved, max_allocated
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / (1024**3)
             reserved = torch.cuda.memory_reserved() / (1024**3)
@@ -376,7 +384,11 @@ class VideoDiffusionInfer():
 
         t = time.time()
         
-        with torch.autocast("cuda", target_dtype, enabled=True):
+        d = "cuda"
+        if platform.system() == "Darwin":
+            d = "mps"
+        
+        with torch.autocast(d, target_dtype, enabled=True):
             latents = self.sampler.sample(
                 x=latents,
                 f=lambda args: classifier_free_guidance_dispatcher(
@@ -467,3 +479,4 @@ class VideoDiffusionInfer():
 
         
         return samples
+    
