@@ -171,8 +171,6 @@ class VideoDiffusionInfer():
             #t = time.time()
             device = get_device()
             dtype = getattr(torch, self.config.vae.dtype)
-            if platform.system() == "Darwin":
-                dtype = next(self.vae.parameters()).dtype
             scale = self.config.vae.scaling_factor
             shift = self.config.vae.get("shifting_factor", 0.0)
 

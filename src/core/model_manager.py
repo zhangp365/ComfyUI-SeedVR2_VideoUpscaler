@@ -249,7 +249,7 @@ def load_quantized_state_dict(checkpoint_path, device="cpu", keep_native_fp8=Tru
             if hasattr(tensor, 'dtype') and tensor.dtype in fp8_types:
                 fp8_detected = True
                 break
-    
+
     if fp8_detected:
         if keep_native_fp8:
             # Keep native FP8 format for optimal performance
@@ -380,7 +380,10 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config, prese
     
     # Create vae model
     if platform.system() == "Darwin":
-        config.vae.dtype = "bfloat16"
+        config.vae.dtype = "float16"
+        if "fp8_e4m3fn" in runner._model_name:
+            config.vae.dtype = "bfloat16"
+    
     dtype = getattr(torch, config.vae.dtype)
     t = time.time()
     loading_device = "cpu" if preserve_vram else device
@@ -435,9 +438,9 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config, prese
         print(f"🔄 CONFIG VAE : VAE LOAD TIME: {time.time() - t} seconds")
     t = time.time()
     runner.vae.load_state_dict(state)
-    
+
     if platform.system() == "Darwin":
-        runner.vae = runner.vae.to(dtype=torch.bfloat16)
+        runner.vae = runner.vae.to(dtype=getattr(torch, config.vae.dtype))
     
     if state_loading_device == "cpu":
         runner.vae.to(device)
