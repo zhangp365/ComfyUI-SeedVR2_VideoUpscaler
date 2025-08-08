@@ -77,9 +77,9 @@ def extract_frames_from_video(video_path, skip_first_frames=0, load_cap=None):
     
     debug.log(f"Video info: {frame_count} frames, {width}x{height}, {fps:.2f} FPS", category="info")
     if skip_first_frames:
-        debug.log(f"⏭️ Will skip first {skip_first_frames} frames", category="info")
+        debug.log(f"Will skip first {skip_first_frames} frames", category="info")
     if load_cap:
-        debug.log(f"🔢 Will load maximum {load_cap} frames", category="info")
+        debug.log(f"Will load maximum {load_cap} frames", category="info")
     
     frames = []
     frame_idx = 0
@@ -93,12 +93,12 @@ def extract_frames_from_video(video_path, skip_first_frames=0, load_cap=None):
         # Skip first frame if requested
         if frame_idx < skip_first_frames:
             frame_idx += 1
-            debug.log(f"⏭️ Skipped first frame", category="info")
+            debug.log(f"Skipped first frame", category="info")
             continue
         
         # Check load cap
         if load_cap is not None and load_cap > 0 and frames_loaded >= load_cap:
-            debug.log(f"🔢 Reached load cap of {load_cap} frames", category="info")
+            debug.log(f"Reached load cap of {load_cap} frames", category="info")
             break
         
         # Convert BGR to RGB
@@ -225,7 +225,7 @@ def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
     model_name = shared_args["model"]
     # ensure model weights present (each process checks but very fast if already downloaded)
     worker_debug.log(f"Configuring runner for device {device_id}", category="general")
-    runner = configure_runner(model_name, model_dir, shared_args["preserve_vram"], worker_debug, block_swap_config=shared_args["block_swap_config"])
+    runner = configure_runner(model_name, model_dir, shared_args["preserve_vram"], worker_debug, block_swap_config=shared_args["block_swap_config"], vae_tiling_enabled=shared_args["vae_tiling_enabled"], vae_tile_size=shared_args["vae_tile_size"], vae_tile_overlap=shared_args["vae_tile_overlap"])
 
     # Run generation
     result_tensor = generation_loop(
@@ -239,6 +239,7 @@ def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
         temporal_overlap=shared_args["temporal_overlap"],
         debug=worker_debug,
         block_swap_config=shared_args["block_swap_config"]
+
     )
 
     # Send back result as numpy array to avoid CUDA transfers
@@ -271,6 +272,9 @@ def _gpu_processing(frames_tensor, device_list, args):
             'offload_io_components': args.offload_io_components,
             'cache_model': args.cache_model,
         },
+        "vae_tiling_enabled": args.vae_tiling_enabled,
+        "vae_tile_size": args.vae_tile_size,
+        "vae_tile_overlap": args.vae_tile_overlap,
     }
 
     for idx, (device_id, chunk_tensor) in enumerate(zip(device_list, chunks)):
@@ -340,7 +344,13 @@ def parse_arguments():
                         help="Cache model weights in memory to avoid reloading")
     parser.add_argument("--offload_io_components", action="store_true",
                         help="Offload IO components to CPU for VRAM optimization")
-    
+    parser.add_argument("--vae_tiling_enabled", action="store_true",
+                        help="Enable VAE tiling for improved VRAM usage")
+    parser.add_argument("--vae_tile_size", type=int, default=512,
+                        help="VAE tile size for tiled decoding (default: 512). Only used if --vae_tiling_enabled is set")
+    parser.add_argument("--vae_tile_overlap", type=int, default=128,
+                        help="VAE tile overlap for tiled decoding (default: 128). Only used if --vae_tiling_enabled is set")
+
     return parser.parse_args()
 
 

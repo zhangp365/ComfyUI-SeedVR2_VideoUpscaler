@@ -68,12 +68,17 @@ def optimized_channels_to_second(tensor):
         return tensor.permute(*dims)
 
 class VideoDiffusionInfer():
-    def __init__(self, config: DictConfig, debug=None):
+    def __init__(self, config: DictConfig, debug=None,  vae_tiling_enabled: bool = False, 
+                 vae_tile_size: int = 512, vae_tile_overlap: int = 64):
         # Check if debug instance is available
         if debug is None:
             raise ValueError("Debug instance must be provided to VideoDiffusionInfer")
         self.config = config
         self.debug = debug
+        self.vae_tiling_enabled = vae_tiling_enabled
+        self.vae_tile_size = vae_tile_size
+        self.vae_tile_overlap = vae_tile_overlap
+        
     def get_condition(self, latent: Tensor, latent_blur: Tensor, task: str) -> Tensor:
         t, h, w, c = latent.shape
         cond = torch.zeros([t, h, w, c + 1], device=latent.device, dtype=latent.dtype)
@@ -139,22 +144,70 @@ class VideoDiffusionInfer():
             else:
                 batches = [sample.unsqueeze(0) for sample in samples]
 
-            # Vae process by each group.
+            # VAE process by each group.
             for sample in batches:
                 sample = sample.to(device, dtype)
                 if hasattr(self.vae, "preprocess"):
                     sample = self.vae.preprocess(sample)
-                if use_sample:
-                    latent = self.vae.encode(sample).latent
-                    #latent = self.vae.encode(sample, preserve_vram).latent
+
+                # Decide on tiling (use output-space size)
+                H = sample.shape[-2] if sample.ndim >= 4 else 0
+                W = sample.shape[-1] if sample.ndim >= 4 else 0
+                spatial_size = H * W
+                use_tiling = (
+                    hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled and
+                    spatial_size > 256 * 256  # threshold on output resolution
+                )
+
+                if use_tiling:
+                    self.debug.log(
+                        f"Using VAE Tiled Encoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})",
+                        category="vae",
+                        force=True,
+                    )
+
+                    # Encode in spatial tiles (temporal handled inside)
+                    encoded_params = self.vae.tiled_encode(
+                        sample,
+                        tile_size=self.vae_tile_size,
+                        tile_overlap=self.vae_tile_overlap,
+                    )
+
+                    # Ensure 5D for consistency [B, C, F, H_lat, W_lat]
+                    if encoded_params.ndim == 4:
+                        encoded_params = encoded_params.unsqueeze(2)
+
+                    # Split into mean/logvar along channels and sample/mode
+                    c_total = encoded_params.shape[1]
+                    c_half = c_total // 2
+                    mean = encoded_params[:, :c_half]
+                    logvar = encoded_params[:, c_half:]
+                    if use_sample:
+                        std = (0.5 * logvar).exp()
+                        latent_cfirst = mean + std * torch.randn_like(mean)
+                    else:
+                        latent_cfirst = mean
+
+                    # Move channels last and apply scale/shift
+                    latent = rearrange(latent_cfirst, "b c ... -> b ... c")
+                    latent = (latent - shift) * scale
+                    latents.append(latent)
+
+                    # Light VRAM cleanup between tiles/groups
+                    clear_vram_cache(self.debug)
                 else:
-                    # Deterministic vae encode, only used for i2v inference (optionally)
-                    latent = self.vae.encode(sample).posterior.mode().squeeze(2)
-                latent = latent.unsqueeze(2) if latent.ndim == 4 else latent
-                latent = rearrange(latent, "b c ... -> b ... c")
-                #latent = optimized_channels_to_last(latent)
-                latent = (latent - shift) * scale
-                latents.append(latent)
+                    # Non-tiled path (original logic)
+                    if use_sample:
+                        latent = self.vae.encode(sample).latent
+                        # latent = self.vae.encode(sample, preserve_vram).latent
+                    else:
+                        # Deterministic vae encode, only used for i2v inference (optionally)
+                        latent = self.vae.encode(sample).posterior.mode().squeeze(2)
+                    latent = latent.unsqueeze(2) if latent.ndim == 4 else latent
+                    latent = rearrange(latent, "b c ... -> b ... c")
+                    # latent = optimized_channels_to_last(latent)
+                    latent = (latent - shift) * scale
+                    latents.append(latent)
 
             # Ungroup back to individual latent with the original order.
             if self.config.vae.grouping:
@@ -181,53 +234,77 @@ class VideoDiffusionInfer():
             if isinstance(shift, ListConfig):
                 shift = torch.tensor(shift, device=device, dtype=dtype)
 
+            # Check if tiling is enabled and if the latents are large enough to warrant it
+            # This is a heuristic, adjust the threshold if needed. 512*512 is a good starting point.
+            first_latent = latents[0]
+            spatial_size = first_latent.shape[1] * first_latent.shape[2] # H * W of latent
+            use_tiling = (
+                hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled and
+                spatial_size > 32*32 # A threshold for latent size (e.g., > 256x256 image)
+            )
 
-            # 🚀 OPTIMISATION 1: Group latents intelligemment pour batch processing
-            if self.config.vae.grouping:
-                latents, indices = na.pack(latents)
-            else:
-                latents = [latent.unsqueeze(0) for latent in latents]
+            if use_tiling:
+                self.debug.log(f"Using VAE Tiled Decoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
 
-            self.debug.log(f"Latents batch shape: {latents[0].shape}", category="info")
-            #self.debug.log(f"🔄 GROUPING time: {time.time() - t} seconds", category="timing")
-            self.debug.start_timer("vae_decode")
-            # 🚀 OPTIMISATION 2: Traitement batch optimisé avec dtype adaptatif
-            for i, latent in enumerate(latents):
-                # Préparation optimisée du latent
-                # Utiliser target_dtype si fourni (évite double autocast)
-                effective_dtype = target_dtype if target_dtype is not None else dtype
-                latent = latent.to(device, effective_dtype, non_blocking=True)
-                latent = latent / scale + shift
-                latent = rearrange(latent, "b ... c -> b c ...")
-                #latent = optimized_channels_to_second(latent)
-                latent = latent.squeeze(2)
-                
-                # 🚀 OPTIMISATION 3: Décodage direct SANS autocast (utilise l'autocast externe)
-                #with torch.autocast("cuda", torch.float16, enabled=True):
-                sample = self.vae.decode(latent, preserve_vram).sample
-                #sample = self.vae.decode(latent).sample
-                #sample = self.vae.decode(latent).sample
-                
-                # 🚀 OPTIMISATION 4: Post-processing conditionnel
-                if hasattr(self.vae, "postprocess"):
-                    sample = self.vae.postprocess(sample)
+                # Apply same grouping logic as regular decode
+                if self.config.vae.grouping:
+                    latents, indices = na.pack(latents)
+                else:
+                    latents = [latent.unsqueeze(0) for latent in latents]
+
+                # Tiling is done one latent at a time
+                for latent in latents:
+                    effective_dtype = target_dtype if target_dtype is not None else dtype
+                    latent = latent.to(device, effective_dtype, non_blocking=True)
+                    latent = latent / scale + shift
+                    latent = rearrange(latent, "b ... c -> b c ...")
                     
-                samples.append(sample)
-                
-                # 🚀 OPTIMISATION 5: Nettoyage sélectif
-                #if i % 2 == 0 or i == len(latents) - 1:
-                    #torch.cuda.empty_cache()
-            
-            self.debug.end_timer("vae_decode", "VAE decode completed")
-            #t = time.time()
-            # Ungroup back to individual sample with the original order.
-            if self.config.vae.grouping:
-                samples = na.unpack(samples, indices)
-            else:
-                samples = [sample.squeeze(0) for sample in samples]
-            #self.debug.log(f"🔄 UNGROUPING time: {time.time() - t} seconds", category="timing")
-            #t = time.time()
+                    with torch.autocast("cuda", torch.float16, enabled=True):
+                        sample = self.vae.tiled_decode(
+                            latent,
+                            tile_size=self.vae_tile_size,
+                            tile_overlap=self.vae_tile_overlap,
+                        )
+                    
+                    if hasattr(self.vae, "postprocess"):
+                        sample = self.vae.postprocess(sample)
+                    samples.append(sample) 
+                    clear_vram_cache(self.debug)
+
+                if self.config.vae.grouping:
+                    samples = na.unpack(samples, indices)
+                else:
+                    samples = [sample.squeeze(0) for sample in samples]
+
+            else: # Original logic for smaller images or when tiling is disabled
+                if self.config.vae.grouping:
+                    latents, indices = na.pack(latents)
+                else:
+                    latents = [latent.unsqueeze(0) for latent in latents]
+                t = time.time()
+                for i, latent in enumerate(latents):
+                    effective_dtype = target_dtype if target_dtype is not None else dtype
+                    latent = latent.to(device, effective_dtype, non_blocking=True)
+                    latent = latent / scale + shift
+                    latent = rearrange(latent, "b ... c -> b c ...")
+                    # Original logic used squeeze(2), let's keep it for compatibility
+                    if latent.ndim == 5:
+                        latent = latent.squeeze(2)
+                    with torch.autocast("cuda", torch.float16, enabled=True):
+                            sample = self.vae.decode(latent).sample
+                    if hasattr(self.vae, "postprocess"):
+                        sample = self.vae.postprocess(sample)
+                    samples.append(sample)
+                    if i % 2 == 0 or i == len(latents) - 1:
+                        torch.cuda.empty_cache()
+                print(f"🔄 DECODE time: {time.time() - t} seconds")
+                if self.config.vae.grouping:
+                    samples = na.unpack(samples, indices)
+                else:
+                    samples = [sample.squeeze(0) for sample in samples]
+
         return samples
+
 
     def timestep_transform(self, timesteps: Tensor, latents_shapes: Tensor):
         # Skip if not needed.
