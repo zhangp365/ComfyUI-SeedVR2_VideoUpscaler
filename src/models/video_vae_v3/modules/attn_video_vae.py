@@ -1184,8 +1184,13 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             self.decoder.mid_block.attentions = torch.nn.ModuleList([None])
 
     @apply_forward_hook
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False) -> AutoencoderKLOutput:
-        h = self.slicing_encode(x, preserve_vram=preserve_vram)
+    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False, 
+               tiled: bool = False, tile_size: int = 512, tile_overlap: int = 64) -> AutoencoderKLOutput:
+        if tiled:
+            h = self.tiled_encode(x, tile_size=tile_size, tile_overlap=tile_overlap, preserve_vram=preserve_vram)
+        else:
+            h = self.slicing_encode(x, preserve_vram=preserve_vram)
+
         posterior = DiagonalGaussianDistribution(h)
 
         if not return_dict:
@@ -1194,10 +1199,13 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     @apply_forward_hook
-    def decode(
-        self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True
-    ) -> Union[DecoderOutput, torch.Tensor]:
-        decoded = self.slicing_decode(z, preserve_vram=preserve_vram)
+    def decode(self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True, 
+               tiled: bool = False, tile_size: int = 512, tile_overlap: int = 64) -> Union[DecoderOutput, torch.Tensor]:
+
+        if tiled:
+            decoded = self.tiled_decode(z, tile_size=tile_size, tile_overlap=tile_overlap, preserve_vram=preserve_vram)
+        else:
+            decoded = self.slicing_decode(z, preserve_vram=preserve_vram)
 
         if not return_dict:
             return (decoded,)
@@ -1266,7 +1274,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         else:
             return self._decode(z, preserve_vram=preserve_vram)
 
-    def tiled_encode(self, x: torch.Tensor, tile_size: int = 512, tile_overlap: int = 64) -> torch.Tensor:
+    def tiled_encode(self, x: torch.Tensor, tile_size: int = 512, tile_overlap: int = 64, preserve_vram: bool = False) -> torch.Tensor:
         r"""
         Encodes an input tensor `x` by splitting it into spatial tiles in latent space. Temporal is handled by `slicing_encode`.
         `tile_size` and `tile_overlap` are interpreted in output-space pixels and converted to latent-space.
@@ -1284,8 +1292,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         latent_tile_size = max(1, tile_size // scale_factor)
         latent_tile_overlap = max(0, min((tile_overlap // scale_factor), latent_tile_size - 1))
 
-        stride_h = max(1, latent_tile_size - latent_tile_overlap)
-        stride_w = max(1, latent_tile_size - latent_tile_overlap)
+        stride = max(1, latent_tile_size - latent_tile_overlap)
 
         H_lat_total = (H + scale_factor - 1) // scale_factor
         W_lat_total = (W + scale_factor - 1) // scale_factor
@@ -1293,15 +1300,19 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         result = None
         count = None
 
-        tile_id = 0
-        num_tiles_h = (H_lat_total + stride_h - 1) // stride_h
-        num_tiles_w = (W_lat_total + stride_w - 1) // stride_w
-        num_tiles = max(1, num_tiles_h * num_tiles_w)
+        num_tiles = ((max(H_lat_total - latent_tile_overlap, 1) + stride - 1) // stride) \
+                  * ((max(W_lat_total - latent_tile_overlap, 1) + stride - 1) // stride)
 
-        for y_lat in range(0, H_lat_total, stride_h):
+        tile_id = 0
+        for y_lat in range(0, H_lat_total, stride):
             y_lat_end = min(y_lat + latent_tile_size, H_lat_total)
-            for x_lat in range(0, W_lat_total, stride_w):
+            for x_lat in range(0, W_lat_total, stride):
                 x_lat_end = min(x_lat + latent_tile_size, W_lat_total)
+
+                # Skip if fully within overlap of previous tiles
+                if (y_lat > 0 and (y_lat_end - y_lat) <= latent_tile_overlap) or \
+                   (x_lat > 0 and (x_lat_end - x_lat) <= latent_tile_overlap):
+                    continue
 
                 # Map latent tile to output-space crop
                 y_out = y_lat * scale_factor
@@ -1316,7 +1327,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                     category="vae",
                 )
 
-                encoded_tile = self.slicing_encode(tile_sample)
+                encoded_tile = self.slicing_encode(tile_sample, preserve_vram=preserve_vram)
 
                 # Initialize output size using first encoded tile
                 if result is None:
@@ -1365,14 +1376,14 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 result[:, :, : et.shape[2], y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat] += et * blend_mask
                 count[:, :, : et.shape[2], y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat] += blend_mask
 
-        result = result / count.clamp(min=1e-6) # normalize
+        result = result / count.clamp(min=1e-6)  # normalize
 
-        if x.shape[2] == 1: # single frame
+        if x.shape[2] == 1:  # single frame
             result = result.squeeze(2)
 
         return result
 
-    def tiled_decode(self, z: torch.Tensor, tile_size: int = 512, tile_overlap: int = 64) -> torch.Tensor:
+    def tiled_decode(self, z: torch.Tensor, tile_size: int = 512, tile_overlap: int = 64, preserve_vram: bool = False) -> torch.Tensor:
         r"""
         Decodes a latent tensor `z` by splitting it into spatial tiles only. Temporal is handled by `slicing_decode`.
         """
@@ -1388,8 +1399,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         latent_tile_size = max(1, tile_size // scale_factor)
         latent_tile_overlap = max(0, min((tile_overlap // scale_factor), latent_tile_size - 1))
 
-        stride_h = max(1, latent_tile_size - latent_tile_overlap)
-        stride_w = max(1, latent_tile_size - latent_tile_overlap)
+        stride = max(1, latent_tile_size - latent_tile_overlap)
 
         # Build a simple spatial blend mask in output space, guard division-by-zero
         blend_mask = torch.ones((1, 1, 1, tile_size, tile_size), device=z.device, dtype=z.dtype)
@@ -1406,20 +1416,24 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         result = None
         count = None
 
-        tile_id = 0
-        num_tiles_h = (H + stride_h - 1) // stride_h
-        num_tiles_w = (W + stride_w - 1) // stride_w
-        num_tiles = max(1, num_tiles_h * num_tiles_w)
+        num_tiles = ((max(H - latent_tile_overlap, 1) + stride - 1) // stride) \
+                  * ((max(W - latent_tile_overlap, 1) + stride - 1) // stride)
 
-        for y_lat in range(0, H, stride_h):
+        tile_id = 0
+        for y_lat in range(0, H, stride):
             y_lat_end = min(y_lat + latent_tile_size, H)
-            for x_lat in range(0, W, stride_w):
+            for x_lat in range(0, W, stride):
                 x_lat_end = min(x_lat + latent_tile_size, W)
+
+                # Skip if fully within overlap of previous tiles
+                if (y_lat > 0 and (y_lat_end - y_lat) <= latent_tile_overlap) or \
+                   (x_lat > 0 and (x_lat_end - x_lat) <= latent_tile_overlap):
+                    continue
 
                 tile_id += 1
                 tile_latent = z[:, :, :, y_lat:y_lat_end, x_lat:x_lat_end]
 
-                decoded_tile = self.slicing_decode(tile_latent)
+                decoded_tile = self.slicing_decode(tile_latent, preserve_vram=preserve_vram)
 
                 # Initialize result tensors using actual decoded shapes on first tile
                 if result is None:
@@ -1444,9 +1458,9 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 result[:, :, : decoded_tile.shape[2], y_out:y_out_end, x_out:x_out_end] += decoded_tile * current_blend_mask
                 count[:, :, : decoded_tile.shape[2], y_out:y_out_end, x_out:x_out_end] += current_blend_mask
 
-        result = result / count.clamp(min=1e-6) # normaliz
+        result = result / count.clamp(min=1e-6)  # normalize
 
-        if z.shape[2] == 1: # single frame
+        if z.shape[2] == 1:  # single frame
             result = result.squeeze(2)
 
         return result
@@ -1499,17 +1513,21 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         x = self.decode(z).sample
         return CausalAutoencoderOutput(x, z, p)
 
-    def encode(self, x: torch.FloatTensor, preserve_vram: bool = False) -> CausalEncoderOutput:
+    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False, 
+               tiled: bool = False, tile_size: int = 512, tile_overlap: int = 64) -> CausalEncoderOutput:
         if x.ndim == 4:
             x = x.unsqueeze(2)
-        p = super().encode(x, preserve_vram=preserve_vram).latent_dist
+        p = super().encode(x, preserve_vram=preserve_vram, return_dict=return_dict, 
+                           tiled=tiled, tile_size=tile_size, tile_overlap=tile_overlap).latent_dist
         z = p.sample().squeeze(2)
         return CausalEncoderOutput(z, p)
 
-    def decode(self, z: torch.FloatTensor, preserve_vram: bool = False) -> CausalDecoderOutput:
+    def decode(self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True, 
+               tiled: bool = False, tile_size: int = 512, tile_overlap: int = 64) -> CausalDecoderOutput:
         if z.ndim == 4:
             z = z.unsqueeze(2)
-        x = super().decode(z, preserve_vram).sample.squeeze(2)
+        x = super().decode(z, preserve_vram=preserve_vram, return_dict=return_dict, 
+                           tiled=tiled, tile_size=tile_size, tile_overlap=tile_overlap).sample.squeeze(2)
         return CausalDecoderOutput(x)
 
     def preprocess(self, x: torch.Tensor):
