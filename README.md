@@ -2,6 +2,16 @@
 
 [![View Code](https://img.shields.io/badge/📂_View_Code-GitHub-181717?style=for-the-badge&logo=github)](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler)
 
+> [!WARNING]
+> ## 🌙 Nightly Branch - Development Version
+> This is the **nightly/development branch** of SeedVR2. This version:
+> - 🚧 Is actively under development and may contain experimental features
+> - ⚠️ May have unstable behavior or unexpected bugs
+> - 🔄 Receives frequent updates that could break existing workflows
+> - 🧪 Is intended for testing and development purposes
+> 
+> **For production use, please switch to the stable/main branch.**
+
 Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for ComfyUI that enables Upscale Video/Images generation.
 
 Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-run-as-standalone) section.
@@ -33,6 +43,15 @@ Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-ru
 - 7B FP8 model seems to have quality issues, use 7BFP16 instead (If FP8 don't give OOM then FP16 will works) I have to review this.
 
 ## 🚀 Updates
+
+**2025.01.30**
+
+- 🎯 **Unified Debug System**: New structured logging with categories, timers, and memory tracking. `enable_debug` now available on main node
+- ⚡ **Smart FP8 Optimization**: FP8 models now keep native FP8 storage, converting to BFloat16 only for arithmetic - faster and more memory efficient than FP16
+- 📦 **Model Registry**: Multi-repo support (numz/ & AInVFX/), auto-discovery of user models, added mixed FP8 variants to fix 7B artifacts
+- 💾 **Model Caching**: `cache_model` moved to main node, fixed memory leaks with proper RoPE/wrapper cleanup
+- 🧹 **Code Cleanup**: New modular structure (`constants.py`, `model_registry.py`, `debug.py`), removed legacy code
+- 🚀 **Performance**: Better memory management with `torch.cuda.ipc_collect()`, improved RoPE handling
 
 **2025.07.17**
 

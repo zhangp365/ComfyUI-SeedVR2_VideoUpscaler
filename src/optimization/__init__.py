@@ -9,7 +9,6 @@ from .memory_manager import (
     clear_vram_cache, 
     reset_vram_peak,
     preinitialize_rope_cache,
-    clear_rope_cache,
 )
 
 # Performance optimization functions
@@ -23,8 +22,6 @@ from .performance import (
 # Compatibility functions and classes
 from .compatibility import (
     FP8CompatibleDiT,
-    apply_fp8_compatibility_hooks,
-    remove_compatibility_hooks,
 )
 
 __all__ = [
@@ -33,7 +30,6 @@ __all__ = [
     "clear_vram_cache",
     "reset_vram_peak",
     "preinitialize_rope_cache",
-    "clear_rope_cache",
     
     # Performance optimization
     "optimized_video_rearrange",
@@ -43,7 +39,5 @@ __all__ = [
     
     # Compatibility
     "FP8CompatibleDiT",
-    "apply_fp8_compatibility_hooks",
-    "remove_compatibility_hooks",
 ] 
 '''
