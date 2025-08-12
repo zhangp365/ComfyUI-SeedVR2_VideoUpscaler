@@ -2,6 +2,16 @@
 
 [![View Code](https://img.shields.io/badge/📂_View_Code-GitHub-181717?style=for-the-badge&logo=github)](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler)
 
+> [!WARNING]
+> ## 🌙 Nightly Branch - Development Version
+> This is the **nightly/development branch** of SeedVR2. This version:
+> - 🚧 Is actively under development and may contain experimental features
+> - ⚠️ May have unstable behavior or unexpected bugs
+> - 🔄 Receives frequent updates that could break existing workflows
+> - 🧪 Is intended for testing and development purposes
+> 
+> **For production use, please switch to the stable/main branch.**
+
 Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for ComfyUI that enables Upscale Video/Images generation.
 
 Can run as **Multi-GPU standalone** too, see [🖥️ Run as Standalone](#️-run-as-standalone) section.
