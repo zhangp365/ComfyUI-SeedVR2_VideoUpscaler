@@ -22,7 +22,6 @@ from diffusers.models.normalization import RMSNorm
 from einops import rearrange
 from torch import Tensor, nn
 from torch.nn import Conv3d
-import platform
 
 from .context_parallel_lib import cache_send_recv, get_cache_size
 from .global_config import get_norm_limit
@@ -120,7 +119,7 @@ class InflatedCausalConv3d(Conv3d):
         if prev_cache is not None:
             prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -170,7 +169,7 @@ class InflatedCausalConv3d(Conv3d):
 
         # ADD BY NUMZ
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -182,7 +181,7 @@ class InflatedCausalConv3d(Conv3d):
         except Exception as e:
             if hasattr(self, 'debug') and self.debug:
                 self.debug.log("OOM Second Chance", category="warning", force=True)
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -369,7 +368,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     except Exception as e:
                         if hasattr(norm_layer, 'debug') and norm_layer.debug:
                             norm_layer.debug.log("OOM Second Chance: Group Norm", category="warning", force=True)
-                        if platform.system() == "Darwin":
+                        if torch.mps.is_available():
                             torch.mps.empty_cache()
                         else:
                             torch.cuda.empty_cache()
@@ -379,7 +378,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     x[i] = x[i].to(input_dtype)
                 # ADD BY NUMZ
                 if preserve_vram:
-                    if platform.system() == "Darwin":
+                    if torch.mps.is_available():
                         torch.mps.empty_cache()
                     else:
                         torch.cuda.empty_cache()
@@ -390,7 +389,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                 except Exception as e:
                     if hasattr(norm_layer, 'debug') and norm_layer.debug:
                         norm_layer.debug.log("OOM Second Chance: Cat", category="warning", force=True)
-                    if platform.system() == "Darwin":
+                    if torch.mps.is_available():
                         torch.mps.empty_cache()
                     else:
                         torch.cuda.empty_cache()

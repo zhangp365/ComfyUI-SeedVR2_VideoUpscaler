@@ -9,7 +9,6 @@ import os
 import torch
 import gc
 import time
-import platform
 import psutil
 from typing import Tuple, Optional
 from src.common.cache import Cache
@@ -23,7 +22,7 @@ except:
     pass
     
 def get_basic_vram_info():
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         mem = psutil.virtual_memory()
         free_memory = mem.total - mem.used
         total_memory = mem.total
@@ -58,7 +57,7 @@ def get_vram_usage() -> Tuple[float, float, float]:
         tuple: (allocated_gb, reserved_gb, max_allocated_gb)
                Returns (0, 0, 0) if CUDA not available
     """
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         allocated = torch.mps.current_allocated_memory() / (1024**3)
         reserved = torch.mps.driver_allocated_memory() / (1024**3)
         max_allocated = 0
@@ -75,7 +74,7 @@ def clear_vram_cache(debug) -> None:
     """Clear VRAM cache and run garbage collection"""
         
     debug.log("Clearing VRAM cache...", category="cleanup")
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         torch.mps.empty_cache()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -221,7 +220,7 @@ def fast_ram_cleanup():
     gc.collect()
     
     # Clear MPS cache
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         torch.mps.empty_cache()
     # Clear CUDA cache
     if torch.cuda.is_available():
@@ -390,7 +389,7 @@ def clear_all_caches(runner, debug, offload_vae=False) -> int:
     gc.collect(2)  # Collect all generations
     
     # Clear MPS cache
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         torch.mps.empty_cache()
     # Clear CUDA cache
     if torch.cuda.is_available():

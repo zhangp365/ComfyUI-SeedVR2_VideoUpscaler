@@ -5,7 +5,6 @@
 import os
 import time
 import torch
-import platform
 from typing import Tuple, Dict, Any
 
 from src.utils.constants import get_base_cache_dir
@@ -463,7 +462,7 @@ The actual memory savings depend on your specific model architecture and will be
         """Create BlockSwap configuration"""
         if blocks_to_swap == 0:
             return (None,)
-        _use_non_blocking = False if platform.system() == "Darwin" else use_non_blocking
+        _use_non_blocking = False if torch.mps.is_available() else use_non_blocking
         config = {
             "blocks_to_swap": blocks_to_swap,
             "use_non_blocking": _use_non_blocking,

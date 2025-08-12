@@ -20,7 +20,6 @@ import os
 import gc
 import torch
 import time
-import platform
 from src.utils.constants import get_script_directory
 from torchvision.transforms import Compose, Lambda, Normalize
 
@@ -76,7 +75,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
         raise ValueError("Debug instance must be provided to generation_step")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         device = "mps"
     
     # Adaptive dtype detection for optimal performance
@@ -100,7 +99,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
         return [i.to(device, dtype=dtype) for i in x]
     
     # Memory optimization: Generate noise once and reuse to save VRAM
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         base_noise = torch.randn_like(cond_latents[0], dtype=dtype)
         noises = [base_noise]
         aug_noises = [base_noise * 0.1 + torch.randn_like(base_noise) * 0.05]
@@ -139,11 +138,9 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Use adaptive autocast for optimal performance
     with torch.no_grad():
-        d = "cuda"
-        if platform.system() == "Darwin":
-            d = "mps"
+        _device = "mps" if torch.mps.is_available() else "cuda"
             
-        with torch.autocast(d, autocast_dtype, enabled=True):
+        with torch.autocast(_device, autocast_dtype, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
                 conditions=conditions,
@@ -231,7 +228,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         raise ValueError("Debug instance must be provided to generation_loop")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    if platform.system() == "Darwin":
+    if torch.mps.is_available():
         device = "mps"
 
     # ───────────────────────────────────────────────────────────────
@@ -409,7 +406,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             debug.end_timer("vae_to_gpu", "VAE to GPU")
             debug.start_timer("vae_encode")
             debug.log(f"VAE encoding precision: {autocast_dtype}", category="vae")
-            _device = "mps" if platform.system() == "Darwin" else "cuda"
+            _device = "mps" if torch.mps.is_available() else "cuda"
             with torch.autocast(_device, autocast_dtype, enabled=True):
                 cond_latents = runner.vae_encode([transformed_video])
             debug.end_timer("vae_encode", "VAE encoding")
@@ -479,7 +476,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         text_neg_embeds = text_neg_embeds.to("cpu")
         runner.dit.to("cpu")
         runner.vae.to("cpu")
-        if platform.system() == "Darwin":
+        if torch.mps.is_available():
             torch.mps.empty_cache()
         else:
             torch.cuda.empty_cache()

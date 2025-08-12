@@ -233,6 +233,10 @@ class Debug:
                 vram_used = 0
                 vram_free = 0
                 vram_info = "VRAM: CPU mode"
+        elif torch.mps.is_available():
+            vram_used = 0
+            vram_free = 0
+            vram_info = "VRAM: MPS mode"
         else:
             vram_used = 0
             vram_free = 0
@@ -284,8 +288,8 @@ class Debug:
                     pass
             
             # Separate by device
-            gpu_tensors = [t for t in all_tensors if t.is_cuda]
-            cpu_tensors = [t for t in all_tensors if not t.is_cuda]
+            gpu_tensors = [t for t in all_tensors if t.is_cuda or t.is_mps]
+            cpu_tensors = [t for t in all_tensors if not (t.is_cuda or t.is_mps)]
             
             tensor_info = f" --- [Tensors] {len(gpu_tensors)} on GPU / {len(all_tensors)} total"
             

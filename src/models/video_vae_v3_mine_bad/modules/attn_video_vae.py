@@ -9,7 +9,6 @@
 #
 # This modified file is released under the same license.
 
-import platform
 from contextlib import nullcontext
 from typing import Literal, Optional, Tuple, Union
 import diffusers
@@ -133,7 +132,7 @@ class Upsample3D(Upsample2D):
             hidden_states = [hidden_states]
         # ADD BY NUMZ
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -155,7 +154,7 @@ class Upsample3D(Upsample2D):
             hidden_states = hidden_states[0]
         # ADD BY NUMZ
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
