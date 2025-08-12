@@ -372,6 +372,20 @@ class FP8CompatibleDiT(torch.nn.Module):
             args = tuple(converted_args)
             kwargs = converted_kwargs
         
+        # Force move weights to device
+        input_device = None
+        for value in kwargs.values():
+            if isinstance(value, torch.Tensor):
+                input_device = value.device
+                break
+        self.debug.log(f"Input Device: {input_device}")
+        
+        if input_device is not None:
+            model_device = next(self.dit_model.parameters()).device
+            if model_device != input_device:
+                self.debug.log(f"Auto-moving DiT model from {model_device} to {input_device}", category="memory")
+                self.dit_model = self.dit_model.to(input_device)
+        
         # Execute forward pass
         try:
             return self.dit_model(*args, **kwargs)
@@ -398,3 +412,4 @@ class FP8CompatibleDiT(torch.nn.Module):
                 setattr(self.dit_model, name, value)
             else:
                 super().__setattr__(name, value)
+                
