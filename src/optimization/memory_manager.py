@@ -37,9 +37,12 @@ def get_basic_vram_info():
         "total_gb": total_gb
     }
 
-# Utilisation
+# Initial VRAM check at module load
 vram_info = get_basic_vram_info()
-print(f"VRAM libre: {vram_info['free_gb']:.2f} GB")
+if "error" not in vram_info:
+    print(f"📊 Initial VRAM status: {vram_info['free_gb']:.2f}GB free / {vram_info['total_gb']:.2f}GB total")
+else:
+    print(f"⚠️ VRAM check: {vram_info['error']} - SeedVR2 requires an NVIDIA GPU")
 
 def get_vram_usage() -> Tuple[float, float, float]:
     """
@@ -57,31 +60,35 @@ def get_vram_usage() -> Tuple[float, float, float]:
     return 0, 0, 0
 
 
-def clear_vram_cache() -> None:
-    """
-    Clear VRAM cache and run garbage collection
-    """
-    print("🧹 Clearing VRAM cache...")
+def clear_vram_cache(debug) -> None:
+    """Clear VRAM cache and run garbage collection"""
+        
+    debug.log("Clearing VRAM cache...", category="cleanup")
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         gc.collect()
 
 
-def reset_vram_peak() -> None:
+def reset_vram_peak(debug) -> None:
     """
     Reset VRAM peak counter for new tracking
     """
+    debug.log("Resetting VRAM peak memory statistics", category="memory")
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
-def preinitialize_rope_cache(runner) -> None:
+def preinitialize_rope_cache(runner, debug) -> None:
     """
     🚀 Pre-initialize RoPE cache to avoid OOM at first launch
     
     Args:
         runner: The model runner containing DiT and VAE models
+        debug: Optional Debug instance
     """
     
+    debug.log("Pre-initializing RoPE cache to avoid OOM...", category="setup")
+
     try:
         # Create dummy tensors to simulate common shapes
         # Format: [batch, channels, frames, height, width] for vid_shape
@@ -133,10 +140,10 @@ def preinitialize_rope_cache(runner) -> None:
                                     return rope_module.get_freqs(vid_shape.cpu(), txt_shape.cpu())
                                     
                         except Exception as e:
-                            print(f"      ⚠️ Failed for {cache_key}: {e}")
+                            debug.log(f"Failed for {cache_key}: {e}", level="WARNING", category="cache")
                             # Return empty tensors as fallback
                             time.sleep(1)
-                            clear_vram_cache()
+                            clear_vram_cache(debug)
 
                             return torch.zeros(1, 64)
                     
@@ -144,7 +151,7 @@ def preinitialize_rope_cache(runner) -> None:
                     temp_cache(cache_key, compute_freqs)
                 
             except Exception as e:
-                print(f"    ❌ Error in module {name}: {e}")
+                debug.log(f"Error in module {name}: {e}", level="ERROR", category="cache")
             finally:
                 # Restore to original device
                 rope_module.to(original_device)
@@ -156,53 +163,8 @@ def preinitialize_rope_cache(runner) -> None:
             runner.cache = temp_cache
         
     except Exception as e:
-        print(f"  ⚠️ Error during RoPE pre-init: {e}")
-        print("  🔄 Model will work but could have OOM at first launch")
-
-
-def clear_rope_cache(runner) -> None:
-    """
-    🧹 Clear RoPE cache to free VRAM
-    
-    Args:
-        runner: The model runner containing the cache
-    """
-    print("🧹 Cleaning RoPE cache...")
-    
-    if hasattr(runner, 'cache') and hasattr(runner.cache, 'cache'):
-        # Count entries before cleanup
-        cache_size = len(runner.cache.cache)
-        
-        # Free all tensors from cache
-        for key, value in runner.cache.cache.items():
-            if isinstance(value, (tuple, list)):
-                for item in value:
-                    if hasattr(item, 'cpu'):
-                        item.cpu()
-                        del item
-            elif hasattr(value, 'cpu'):
-                value.cpu()
-                del value
-        
-        # Clear the cache
-        runner.cache.cache.clear()
-        print(f"  ✅ RoPE cache cleared ({cache_size} entries removed)")
-
-    if hasattr(runner, 'dit'):
-        cleared_lru_count = 0
-        for module in runner.dit.modules():
-            if isinstance(module, RotaryEmbeddingBase):
-                if hasattr(module.get_axial_freqs, 'cache_clear'):
-                    module.get_axial_freqs.cache_clear()
-                    cleared_lru_count += 1
-        if cleared_lru_count > 0:
-            print(f"  ✅ Cleared {cleared_lru_count} LRU caches from RoPE modules.")
-    # Aggressive VRAM cleanup
-    # clear_vram_cache()
-    #torch.cuda.empty_cache()
-    #clear_vram_cache()
-    
-    print("🎯 RoPE cache cleanup completed!")
+        debug.log(f"Error during RoPE pre-init: {e}", level="WARNING", category="setup", force=True)
+        debug.log("Model will work but could have OOM at first launch", level="WARNING", category="setup", force=True)
 
 
 def clear_rope_lru_caches(model) -> int:
@@ -248,6 +210,7 @@ def fast_ram_cleanup():
     # Clear CUDA cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         torch.cuda.reset_peak_memory_stats()
     
     # Clear PyTorch internal caches
@@ -257,32 +220,24 @@ def fast_ram_cleanup():
         pass
     
 
-def clear_all_caches(runner, debugger=None) -> int:
+def clear_all_caches(runner, debug, offload_vae=False) -> int:
     """
     Aggressively clear all caches from runner and model.
     Optimized to only process what's necessary.
     
     Args:
         runner: The runner instance to clear caches from
-        debugger: Optional BlockSwapDebugger instance for logging
+        debug: Optional Debug instance for logging
+        offload_vae: If True, also moves VAE to CPU and clears its caches
     """
     if not runner:
         return 0
     
-    # Try to get debugger from runner if not provided
-    if debugger is None and hasattr(runner, '_blockswap_debugger'):
-        debugger = runner._blockswap_debugger
-    
-    # Helper function for logging
-    def log_message(message, level="INFO"):
-        if debugger and debugger.enabled:
-            debugger.log(message, level)
-        
     cleaned_items = 0
     
     # Early exit if no caches to clear
     has_cache = hasattr(runner, 'cache') and hasattr(runner.cache, 'cache')
-    if not has_cache and not hasattr(runner, 'dit'):
+    if not has_cache and not hasattr(runner, 'dit') and not (offload_vae and hasattr(runner, 'vae')):
         return 0
     
     # Clear main runner cache efficiently
@@ -310,7 +265,7 @@ def clear_all_caches(runner, debugger=None) -> int:
         # Clear the cache after processing
         runner.cache.cache.clear()
         cleaned_items += cache_entries
-        log_message(f"✅ Cleared {cache_entries} cache entries")
+        debug.log(f"Cleared {cache_entries} cache entries", category="success")
     
     # Clear any accumulated state in blocks
     if hasattr(runner, 'dit'):
@@ -322,7 +277,7 @@ def clear_all_caches(runner, debugger=None) -> int:
         rope_caches_cleared = clear_rope_lru_caches(model)
         cleaned_items += rope_caches_cleared
         if rope_caches_cleared > 0:
-            log_message(f"✅ Cleared {rope_caches_cleared} RoPE LRU caches")
+            debug.log(f"Cleared {rope_caches_cleared} RoPE LRU caches", category="success")
             
         # Clear block attributes if needed
         if hasattr(model, 'blocks'):
@@ -364,7 +319,7 @@ def clear_all_caches(runner, debugger=None) -> int:
                         pass  # Already deleted or doesn't exist
                             
             if block_attrs_cleared > 0:
-                log_message(f"✅ Cleared {block_attrs_cleared} temporary attributes from blocks")
+                debug.log(f"Cleared {block_attrs_cleared} temporary attributes from blocks", category="success")
     
     # Clear any temporary attributes that might accumulate
     temp_attrs = ['_temp_cache', '_block_cache', '_swap_cache', '_generation_cache',
@@ -383,7 +338,37 @@ def clear_all_caches(runner, debugger=None) -> int:
             if hasattr(obj, attr):
                 delattr(obj, attr)
                 cleaned_items += 1
-                log_message(f"✅ Cleared {attr} from {type(obj).__name__}")
+                debug.log(f"Cleared {attr} from {type(obj).__name__}", category="success")
+    
+    # Handle VAE offloading if requested
+    if offload_vae and hasattr(runner, 'vae') and runner.vae is not None:
+        debug.log("Moving VAE to CPU and clearing intermediate tensors", category="cleanup")
+        
+        # Clear any intermediate tensors/buffers in VAE
+        vae_caches_cleared = 0
+        for module in runner.vae.modules():
+            # Clear module-specific caches
+            for cache_attr in ['_temp_cache', '_intermediate_cache']:
+                if hasattr(module, cache_attr):
+                    delattr(module, cache_attr)
+                    vae_caches_cleared += 1
+            
+            # Clear any CUDA tensors in module attributes
+            for attr_name in list(vars(module).keys()):
+                attr = getattr(module, attr_name, None)
+                if torch.is_tensor(attr) and attr.is_cuda:
+                    # Move tensor to CPU if it's not a parameter/buffer
+                    if attr_name not in module._parameters and attr_name not in module._buffers:
+                        setattr(module, attr_name, attr.cpu())
+                        vae_caches_cleared += 1
+        
+        if vae_caches_cleared > 0:
+            debug.log(f"Cleared {vae_caches_cleared} VAE caches", category="success")
+        
+        # Move entire VAE to CPU (preserves model for reuse)
+        runner.vae = runner.vae.to('cpu')
+        debug.log("VAE moved to CPU, intermediate tensors cleared", category="success")
+        cleaned_items += vae_caches_cleared
                 
     # Force garbage collection
     gc.collect(2)  # Collect all generations
@@ -391,7 +376,6 @@ def clear_all_caches(runner, debugger=None) -> int:
     # Clear CUDA cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        if COMFYUI_AVAILABLE:
-            mm.soft_empty_cache()
+        torch.cuda.ipc_collect()
 
     return cleaned_items

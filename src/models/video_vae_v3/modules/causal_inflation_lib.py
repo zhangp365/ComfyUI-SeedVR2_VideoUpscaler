@@ -47,7 +47,6 @@ def get_next_sequence_parallel_rank():
 def get_prev_sequence_parallel_rank():
     return 0
 
-
 @contextmanager
 def ignore_padding(model):
     orig_padding = model.padding
@@ -121,6 +120,7 @@ class InflatedCausalConv3d(Conv3d):
             prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
         if preserve_vram:
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
         # Loop Fwd.
         cache = None
         for idx in range(len(x)):
@@ -167,13 +167,16 @@ class InflatedCausalConv3d(Conv3d):
         # ADD BY NUMZ
         if preserve_vram:
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
             #print("empty cache 1")
             #time.sleep(2)
         try:
             output = torch.cat(x, split_dim)
         except Exception as e:
-            print("OOM second chance")
+            if hasattr(self, 'debug') and self.debug:
+                self.debug.log("OOM Second Chance", category="warning", force=True)
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
             time.sleep(2)
             output = torch.cat(x, split_dim)
         return output
@@ -354,20 +357,25 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     try:
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     except Exception as e:
-                        print("OOM Second Chance : Group Norm")
+                        if hasattr(norm_layer, 'debug') and norm_layer.debug:
+                            norm_layer.debug.log("OOM Second Chance: Group Norm", category="warning", force=True)
                         torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
                         time.sleep(2)
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     x[i] = x[i].to(input_dtype)
                 # ADD BY NUMZ
                 if preserve_vram:
                     torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
                 # ADD BY NUMZ
                 try:
                     x = torch.cat(x, dim=1)
                 except Exception as e:
-                    print("OOM Second Chance : Cat")
+                    if hasattr(norm_layer, 'debug') and norm_layer.debug:
+                        norm_layer.debug.log("OOM Second Chance: Cat", category="warning", force=True)
                     torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
                     time.sleep(2)
                     x = torch.cat(x, dim=1)
             else:
