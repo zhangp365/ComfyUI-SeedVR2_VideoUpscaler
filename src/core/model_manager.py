@@ -18,6 +18,7 @@ Key Features:
 import os
 import time
 import torch
+import platform
 from src.utils.constants import get_script_directory
 from omegaconf import DictConfig, OmegaConf
 
@@ -178,6 +179,8 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if platform.system() == "Darwin":
+        device = "mps"
     
     # Configure models
     checkpoint_path = os.path.join(base_cache_dir, f'./{model}')
@@ -258,7 +261,7 @@ def load_quantized_state_dict(checkpoint_path, device="cpu", keep_native_fp8=Tru
             if hasattr(tensor, 'dtype') and tensor.dtype in fp8_types:
                 fp8_detected = True
                 break
-    
+
     if fp8_detected:
         if keep_native_fp8:
             # Keep native FP8 format for optimal performance
@@ -393,6 +396,10 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
         raise ValueError("Debug instance must be provided to configure_vae_model_inference")
     
     # Create vae model
+    if platform.system() == "Darwin":
+        config.vae.dtype = "float16"
+        if "fp8_e4m3fn" in runner._model_name:
+            config.vae.dtype = "bfloat16"
     
     dtype = getattr(torch, config.vae.dtype)
     debug.start_timer("vae_model_create")
@@ -444,6 +451,10 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
     debug.end_timer("vae_load", "VAE loaded")
     debug.start_timer("vae_load_state_dict")
     runner.vae.load_state_dict(state)
+
+    if platform.system() == "Darwin":
+        runner.vae = runner.vae.to(dtype=getattr(torch, config.vae.dtype))
+    
     if state_loading_device == "cpu":
         runner.vae.to(device)
     if 'state' in locals():

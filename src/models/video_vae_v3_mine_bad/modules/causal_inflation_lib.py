@@ -48,6 +48,7 @@ def get_next_sequence_parallel_rank():
 def get_prev_sequence_parallel_rank():
     return 0
 
+
 @contextmanager
 def ignore_padding(model):
     orig_padding = model.padding
@@ -124,7 +125,7 @@ class InflatedCausalConv3d(Conv3d):
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+            #print("empty cache 0")
         # Loop Fwd.
         cache = None
         for idx in range(len(x)):
@@ -167,26 +168,22 @@ class InflatedCausalConv3d(Conv3d):
 
             # Update cache.
             cache = next_cache
-
         # ADD BY NUMZ
         if preserve_vram:
             if platform.system() == "Darwin":
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
             #print("empty cache 1")
             #time.sleep(2)
         try:
             output = torch.cat(x, split_dim)
         except Exception as e:
-            if hasattr(self, 'debug') and self.debug:
-                self.debug.log("OOM Second Chance", category="warning", force=True)
+            print("OOM second chance")
             if platform.system() == "Darwin":
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
             time.sleep(2)
             output = torch.cat(x, split_dim)
         return output
@@ -367,13 +364,11 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     try:
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     except Exception as e:
-                        if hasattr(norm_layer, 'debug') and norm_layer.debug:
-                            norm_layer.debug.log("OOM Second Chance: Group Norm", category="warning", force=True)
+                        print("OOM Second Chance : Group Norm")
                         if platform.system() == "Darwin":
                             torch.mps.empty_cache()
                         else:
                             torch.cuda.empty_cache()
-                            torch.cuda.ipc_collect()
                         time.sleep(2)
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     x[i] = x[i].to(input_dtype)
@@ -383,20 +378,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                         torch.mps.empty_cache()
                     else:
                         torch.cuda.empty_cache()
-                        torch.cuda.ipc_collect()
-                # ADD BY NUMZ
-                try:
-                    x = torch.cat(x, dim=1)
-                except Exception as e:
-                    if hasattr(norm_layer, 'debug') and norm_layer.debug:
-                        norm_layer.debug.log("OOM Second Chance: Cat", category="warning", force=True)
-                    if platform.system() == "Darwin":
-                        torch.mps.empty_cache()
-                    else:
-                        torch.cuda.empty_cache()
-                        torch.cuda.ipc_collect()
-                    time.sleep(2)
-                    x = torch.cat(x, dim=1)
+                x = torch.cat(x, dim=1)
             else:
                 x = norm_layer(x)
             x = rearrange(x, "(b t) c h w -> b c t h w", t=t)

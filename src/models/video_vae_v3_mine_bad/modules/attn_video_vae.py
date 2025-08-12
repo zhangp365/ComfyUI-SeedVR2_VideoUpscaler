@@ -9,9 +9,8 @@
 #
 # This modified file is released under the same license.
 
-
+import platform
 from contextlib import nullcontext
-import time
 from typing import Literal, Optional, Tuple, Union
 import diffusers
 import torch
@@ -29,7 +28,6 @@ from diffusers.utils import is_torch_version
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
 from ....common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
-import platform
 
 from ....common.distributed.advanced import get_sequence_parallel_world_size
 from ....common.logger import get_logger
@@ -55,6 +53,7 @@ from .types import (
 )
 
 logger = get_logger(__name__)  # pylint: disable=invalid-name
+
 
 class Upsample3D(Upsample2D):
     """A 3D upsampling layer with an optional convolution."""
@@ -138,7 +137,6 @@ class Upsample3D(Upsample2D):
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
         for i in range(len(hidden_states)):
             hidden_states[i] = self.upscale_conv(hidden_states[i])
             hidden_states[i] = rearrange(
@@ -161,7 +159,6 @@ class Upsample3D(Upsample2D):
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
         if self.use_conv:
             if self.name == "conv":
                 hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
@@ -230,6 +227,7 @@ class Downsample3D(Downsample2D):
         self,
         hidden_states: torch.FloatTensor,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
         **kwargs,
     ) -> torch.FloatTensor:
 
@@ -245,7 +243,7 @@ class Downsample3D(Downsample2D):
 
         assert hidden_states.shape[1] == self.channels
 
-        hidden_states = self.conv(hidden_states, memory_state=memory_state)
+        hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
 
         return hidden_states
 
@@ -307,26 +305,14 @@ class ResnetBlock3D(ResnetBlock2D):
                 inflation_mode=inflation_mode,
             )
 
-
     def forward(
         self, input_tensor, temb, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False, **kwargs
     ):
         hidden_states = input_tensor
-
+        
         hidden_states = causal_norm_wrapper(self.norm1, hidden_states, preserve_vram=preserve_vram)
-        # ADD BY NUMZ
-        try:
-            hidden_states = self.nonlinearity(hidden_states)
-        except Exception as e:
-            if hasattr(self, 'debug') and self.debug:
-                self.debug.log("OOM second chance: ResnetBlock3D", category="warning", force=True)
-            if platform.system() == "Darwin":
-                torch.mps.empty_cache()
-            else:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-            time.sleep(1)
-            hidden_states = self.nonlinearity(hidden_states)
+
+        hidden_states = self.nonlinearity(hidden_states)
 
         if self.upsample is not None:
             # upsample_nearest_nhwc fails with large batch sizes.
@@ -453,15 +439,16 @@ class DownEncoderBlock3D(DownEncoderBlock2D):
         self,
         hidden_states: torch.FloatTensor,
         memory_state: MemoryState = MemoryState.DISABLED,
+        preserve_vram: bool = False,
         **kwargs,
     ) -> torch.FloatTensor:
         for resnet, temporal in zip(self.resnets, self.temporal_modules):
-            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state)
+            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state, preserve_vram=preserve_vram)
             hidden_states = temporal(hidden_states)
 
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
-                hidden_states = downsampler(hidden_states, memory_state=memory_state)
+                hidden_states = downsampler(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
 
         return hidden_states
 
@@ -818,7 +805,7 @@ class Encoder3D(nn.Module):
         sample: torch.FloatTensor,
         extra_cond=None,
         memory_state: MemoryState = MemoryState.DISABLED,
-        preserve_vram: bool = False,
+        preserve_vram: bool = False
     ) -> torch.FloatTensor:
         r"""The forward method of the `Encoder` class."""
         sample = self.conv_in(sample, memory_state=memory_state, preserve_vram=preserve_vram)
@@ -850,7 +837,7 @@ class Encoder3D(nn.Module):
             # down
             # [Override] add extra block and extra cond
             for down_block, extra_block in zip(self.down_blocks, self.conv_extra_cond):
-                sample = down_block(sample, memory_state=memory_state)
+                sample = down_block(sample, memory_state=memory_state, preserve_vram=preserve_vram)
                 if extra_block is not None:
                     sample = sample + safe_interpolate_operation(extra_block(extra_cond), size=sample.shape[2:])
 
@@ -994,13 +981,14 @@ class Decoder3D(nn.Module):
         sample: torch.FloatTensor,
         latent_embeds: Optional[torch.FloatTensor] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
-        preserve_vram: bool = False,
+        preserve_vram: bool = False
     ) -> torch.FloatTensor:
         r"""The forward method of the `Decoder` class."""
 
         sample = self.conv_in(sample, memory_state=memory_state)
 
         #upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
+        # ADD BY NUMZ
         upscale_dtype = sample.dtype
         if self.training and self.gradient_checkpointing:
 
@@ -1043,7 +1031,7 @@ class Decoder3D(nn.Module):
                 sample = up_block(sample, latent_embeds, memory_state=memory_state, preserve_vram=preserve_vram)
 
         # post-process
-        sample = causal_norm_wrapper(self.conv_norm_out, sample)
+        sample = causal_norm_wrapper(self.conv_norm_out, sample, preserve_vram=preserve_vram)
         sample = self.conv_act(sample)
         sample = self.conv_out(sample, memory_state=memory_state)
 
@@ -1109,6 +1097,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         extra_cond_dim = kwargs.pop("extra_cond_dim") if "extra_cond_dim" in kwargs else None
         self.slicing_sample_min_size = slicing_sample_min_size
         self.slicing_latent_min_size = slicing_sample_min_size // (2**temporal_scale_num)
+
 
         super().__init__(
             in_channels=in_channels,
@@ -1194,14 +1183,8 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             self.decoder.mid_block.attentions = torch.nn.ModuleList([None])
 
     @apply_forward_hook
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False, 
-               tiled: bool = False, tile_size: Tuple[int, int] = (512, 512), 
-               tile_overlap: Tuple[int, int] = (64, 64)) -> AutoencoderKLOutput:
-        if tiled:
-            h = self.tiled_encode(x, tile_size=tile_size, tile_overlap=tile_overlap, preserve_vram=preserve_vram)
-        else:
-            h = self.slicing_encode(x, preserve_vram=preserve_vram)
-
+    def encode(self, x: torch.FloatTensor, preserve_vram: bool = False, return_dict: bool = True) -> AutoencoderKLOutput:
+        h = self.slicing_encode(x, preserve_vram)
         posterior = DiagonalGaussianDistribution(h)
 
         if not return_dict:
@@ -1210,14 +1193,10 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     @apply_forward_hook
-    def decode(self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True, 
-               tiled: bool = False, tile_size: Tuple[int, int] = (512, 512), 
-               tile_overlap: Tuple[int, int] = (64, 64)) -> Union[DecoderOutput, torch.Tensor]:
-
-        if tiled:
-            decoded = self.tiled_decode(z, tile_size=tile_size, tile_overlap=tile_overlap, preserve_vram=preserve_vram)
-        else:
-            decoded = self.slicing_decode(z, preserve_vram=preserve_vram)
+    def decode(
+        self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True
+    ) -> Union[DecoderOutput, torch.Tensor]:
+        decoded = self.slicing_decode(z, preserve_vram)
 
         if not return_dict:
             return (decoded,)
@@ -1263,12 +1242,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 encoded_slices.append(
                     self._encode(x_slices[x_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
                 )
-            out = torch.cat(encoded_slices, dim=2)
-            # fix memory leak
-            for m in self.modules():
-                if isinstance(m, InflatedCausalConv3d):
-                    m.memory = None
-            return out
+            return torch.cat(encoded_slices, dim=2)
         else:
             return self._encode(x, preserve_vram=preserve_vram)
 
@@ -1285,242 +1259,17 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             ]
             for z_idx in range(1, len(z_slices)):
                 decoded_slices.append(
-                    self._decode(z_slices[z_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
+                    self._decode(z_slices[z_idx], memory_state=MemoryState.DISABLED, preserve_vram=preserve_vram)
                 )
             return torch.cat(decoded_slices, dim=2)
         else:
             return self._decode(z, preserve_vram=preserve_vram)
 
-    def tiled_encode(self, x: torch.Tensor, tile_size: Tuple[int, int] = (512, 512), 
-                     tile_overlap: Tuple[int, int] = (64, 64), preserve_vram: bool = False) -> torch.Tensor:
-        r"""
-        Encodes an input tensor `x` by splitting it into spatial tiles in latent space. Temporal is handled by `slicing_encode`.
-        `tile_size` and `tile_overlap` are interpreted in output-space pixels and converted to latent-space.
-        """
-        # Ensure 5D [B, C, F, H, W]
-        if x.ndim != 5:
-            x = x.unsqueeze(2)
+    def tiled_encode(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        raise NotImplementedError
 
-        b, c, f, H, W = x.shape
-
-        # Spatial scale factor (output/latent)
-        scale_factor = self.spatial_downsample_factor
-
-        # Convert output-space tiling params to latent-space
-        tile_h, tile_w = tile_size
-        overlap_h, overlap_w = tile_overlap
-        
-        latent_tile_h = max(1, tile_h // scale_factor)
-        latent_tile_w = max(1, tile_w // scale_factor)
-        latent_overlap_h = max(0, min((overlap_h // scale_factor), latent_tile_h - 1))
-        latent_overlap_w = max(0, min((overlap_w // scale_factor), latent_tile_w - 1))
-
-        stride_h = max(1, latent_tile_h - latent_overlap_h)
-        stride_w = max(1, latent_tile_w - latent_overlap_w)
-
-        H_lat_total = (H + scale_factor - 1) // scale_factor
-        W_lat_total = (W + scale_factor - 1) // scale_factor
-
-        result = None
-        count = None
-
-        num_tiles = ((max(H_lat_total - latent_overlap_h, 1) + stride_h - 1) // stride_h) \
-                  * ((max(W_lat_total - latent_overlap_w, 1) + stride_w - 1) // stride_w)
-
-        tile_id = 0
-        for y_lat in range(0, H_lat_total, stride_h):
-            y_lat_end = min(y_lat + latent_tile_h, H_lat_total)
-            for x_lat in range(0, W_lat_total, stride_w):
-                x_lat_end = min(x_lat + latent_tile_w, W_lat_total)
-
-                # Skip if fully within overlap of previous tiles
-                if (y_lat > 0 and (y_lat_end - y_lat) <= latent_overlap_h) or \
-                   (x_lat > 0 and (x_lat_end - x_lat) <= latent_overlap_w):
-                    continue
-
-                # Map latent tile to output-space crop
-                y_out = y_lat * scale_factor
-                x_out = x_lat * scale_factor
-                y_out_end = min(y_lat_end * scale_factor, H)
-                x_out_end = min(x_lat_end * scale_factor, W)
-
-                tile_id += 1
-                tile_sample = x[:, :, :, y_out:y_out_end, x_out:x_out_end]
-                self.debug.log(
-                    f"Encoding tile {tile_id} / {num_tiles} (Lat [{y_lat}:{y_lat_end}, {x_lat}:{x_lat_end}] -> Out [{y_out}:{y_out_end}, {x_out}:{x_out_end}], Shape: {list(tile_sample.shape)})",
-                    category="vae",
-                )
-
-                encoded_tile = self.slicing_encode(tile_sample, preserve_vram=preserve_vram)
-
-                # Initialize output size using first encoded tile
-                if result is None:
-                    b_out, c_out, f_lat, _, _ = encoded_tile.shape
-                    result = torch.zeros(
-                        (b_out, c_out, f_lat, H_lat_total, W_lat_total),
-                        device=encoded_tile.device,
-                        dtype=encoded_tile.dtype,
-                    )
-                    count = torch.zeros((1, 1, 1, H_lat_total, W_lat_total), device=encoded_tile.device, dtype=encoded_tile.dtype)
-
-                eff_h_lat = min(y_lat_end - y_lat, encoded_tile.shape[3], result.shape[3] - y_lat)
-                eff_w_lat = min(x_lat_end - x_lat, encoded_tile.shape[4], result.shape[4] - x_lat)
-
-                encoded_tile = encoded_tile[:, :, : result.shape[2], :eff_h_lat, :eff_w_lat]
-
-                # Build faded masks
-                ov_h = max(0, min(latent_overlap_h, eff_h_lat - 1))
-                ov_w = max(0, min(latent_overlap_w, eff_w_lat - 1))
-                weight_h = torch.ones((eff_h_lat,), device=encoded_tile.device, dtype=encoded_tile.dtype)
-                weight_w = torch.ones((eff_w_lat,), device=encoded_tile.device, dtype=encoded_tile.dtype)
-
-                # Apply fades only on interior edges (avoid fading on outer image borders)
-                top_edge = (y_lat == 0)
-                bottom_edge = (y_lat_end == H_lat_total)
-                left_edge = (x_lat == 0)
-                right_edge = (x_lat_end == W_lat_total)
-
-                if ov_h > 0:
-                    t_h = torch.linspace(0, 1, steps=ov_h, device=encoded_tile.device, dtype=encoded_tile.dtype)
-                    ramp_h = 0.5 - 0.5 * torch.cos(t_h * torch.pi)  # Hann ramp 0->1
-                    if not top_edge:
-                        weight_h[:ov_h] = ramp_h
-                    if not bottom_edge:
-                        weight_h[-ov_h:] = 1 - ramp_h
-                if ov_w > 0:
-                    t_w = torch.linspace(0, 1, steps=ov_w, device=encoded_tile.device, dtype=encoded_tile.dtype)
-                    ramp_w = 0.5 - 0.5 * torch.cos(t_w * torch.pi)  # Hann ramp 0->1
-                    if not left_edge:
-                        weight_w[:ov_w] = ramp_w
-                    if not right_edge:
-                        weight_w[-ov_w:] = 1 - ramp_w
-
-                # Separable application (no 2D mask to save memory)
-                weight_h_5d = weight_h.view(1, 1, 1, eff_h_lat, 1)
-                weight_w_5d = weight_w.view(1, 1, 1, 1, eff_w_lat)
-                encoded_tile.mul_(weight_h_5d)
-                encoded_tile.mul_(weight_w_5d)
-
-                result[:, :, : encoded_tile.shape[2], y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat] += encoded_tile
-                count[:, :, :, y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat].addcmul_(weight_h_5d, weight_w_5d)
-
-        result = result / count.clamp(min=1e-6)  # normalize
-
-        if x.shape[2] == 1:  # single frame
-            result = result.squeeze(2)
-
-        return result
-
-    def tiled_decode(self, z: torch.Tensor, tile_size: Tuple[int, int] = (512, 512), tile_overlap: Tuple[int, int] = (64, 64), preserve_vram: bool = False) -> torch.Tensor:
-        r"""
-        Decodes a latent tensor `z` by splitting it into spatial tiles only. Temporal is handled by `slicing_decode`.
-        """
-        if z.ndim != 5:
-            z = z.unsqueeze(2)
-
-        b, c, f, H, W = z.shape
-
-        # Spatial scale factor (output/latent)
-        scale_factor = self.spatial_downsample_factor
-
-        # Convert output-space tiling params to latent-space for spatial tiling
-        tile_h, tile_w = tile_size
-        overlap_h, overlap_w = tile_overlap
-        
-        latent_tile_h = max(1, tile_h // scale_factor)
-        latent_tile_w = max(1, tile_w // scale_factor)
-        latent_overlap_h = max(0, min((overlap_h // scale_factor), latent_tile_h - 1))
-        latent_overlap_w = max(0, min((overlap_w // scale_factor), latent_tile_w - 1))
-
-        stride_h = max(1, latent_tile_h - latent_overlap_h)
-        stride_w = max(1, latent_tile_w - latent_overlap_w)
-
-        # Allocate later using first decoded results
-        result = None
-        count = None
-
-        num_tiles = ((max(H - latent_overlap_h, 1) + stride_h - 1) // stride_h) \
-                  * ((max(W - latent_overlap_w, 1) + stride_w - 1) // stride_w)
-
-        tile_id = 0
-        for y_lat in range(0, H, stride_h):
-            y_lat_end = min(y_lat + latent_tile_h, H)
-            for x_lat in range(0, W, stride_w):
-                x_lat_end = min(x_lat + latent_tile_w, W)
-
-                # Skip if fully within overlap of previous tiles
-                if (y_lat > 0 and (y_lat_end - y_lat) <= latent_overlap_h) or \
-                   (x_lat > 0 and (x_lat_end - x_lat) <= latent_overlap_w):
-                    continue
-
-                tile_id += 1
-                tile_latent = z[:, :, :, y_lat:y_lat_end, x_lat:x_lat_end]
-
-                decoded_tile = self.slicing_decode(tile_latent, preserve_vram=preserve_vram)
-
-                # Initialize result tensors using actual decoded shapes on first tile
-                if result is None:
-                    b_out, c_out, out_f_tile, _, _ = decoded_tile.shape
-                    output_h = H * scale_factor
-                    output_w = W * scale_factor
-                    result = torch.zeros((b_out, c_out, out_f_tile, output_h, output_w), device=decoded_tile.device, dtype=decoded_tile.dtype)
-                    count = torch.zeros((1, 1, 1, output_h, output_w), device=decoded_tile.device, dtype=decoded_tile.dtype)
-
-                # Corresponding output-space placement
-                y_out, y_out_end = y_lat * scale_factor, y_lat_end * scale_factor
-                x_out, x_out_end = x_lat * scale_factor, x_lat_end * scale_factor
-
-                self.debug.log(
-                    f"Decoding tile {tile_id} / {num_tiles} (Lat [{y_lat}:{y_lat_end}, {x_lat}:{x_lat_end}] -> Out [{y_out}:{y_out_end}, {x_out}:{x_out_end}], Shape: {list(tile_latent.shape)})",
-                    category="vae",
-                )
-
-                h_out = y_out_end - y_out
-                w_out = x_out_end - x_out
-
-                # Build faded masks
-                ov_h_out = max(0, min(overlap_h, h_out - 1))
-                ov_w_out = max(0, min(overlap_w, w_out - 1))
-                weight_h = torch.ones((h_out,), device=decoded_tile.device, dtype=decoded_tile.dtype)
-                weight_w = torch.ones((w_out,), device=decoded_tile.device, dtype=decoded_tile.dtype)
-
-                # Apply fades only on interior edges (avoid fading on outer image borders)
-                top_edge = (y_lat == 0)
-                bottom_edge = (y_lat_end == H)
-                left_edge = (x_lat == 0)
-                right_edge = (x_lat_end == W)
-
-                if ov_h_out > 0:
-                    t_h = torch.linspace(0, 1, steps=ov_h_out, device=decoded_tile.device, dtype=decoded_tile.dtype)
-                    ramp_h = 0.5 - 0.5 * torch.cos(t_h * torch.pi)  # Hann ramp 0->1
-                    if not top_edge:
-                        weight_h[:ov_h_out] = ramp_h
-                    if not bottom_edge:
-                        weight_h[-ov_h_out:] = 1 - ramp_h
-                if ov_w_out > 0:
-                    t_w = torch.linspace(0, 1, steps=ov_w_out, device=decoded_tile.device, dtype=decoded_tile.dtype)
-                    ramp_w = 0.5 - 0.5 * torch.cos(t_w * torch.pi)  # Hann ramp 0->1
-                    if not left_edge:
-                        weight_w[:ov_w_out] = ramp_w
-                    if not right_edge:
-                        weight_w[-ov_w_out:] = 1 - ramp_w
-
-                # Separable application (no 2D mask to save memory)
-                weight_h_5d = weight_h.view(1, 1, 1, h_out, 1)
-                weight_w_5d = weight_w.view(1, 1, 1, 1, w_out)
-                decoded_tile.mul_(weight_h_5d)
-                decoded_tile.mul_(weight_w_5d)
-
-                # Accumulate into result/count
-                result[:, :, : decoded_tile.shape[2], y_out:y_out_end, x_out:x_out_end] += decoded_tile
-                count[:, :, :, y_out:y_out_end, x_out:x_out_end].addcmul_(weight_h_5d, weight_w_5d)
-
-        result = result / count.clamp(min=1e-6)  # normalize
-
-        if z.shape[2] == 1:  # single frame
-            result = result.squeeze(2)
-
-        return result
+    def tiled_decode(self, z: torch.Tensor, **kwargs) -> torch.Tensor:
+        raise NotImplementedError
 
     def forward(
         self, x: torch.FloatTensor, mode: Literal["encode", "decode", "all"] = "all", **kwargs
@@ -1570,23 +1319,17 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         x = self.decode(z).sample
         return CausalAutoencoderOutput(x, z, p)
 
-    def encode(self, x: torch.FloatTensor, return_dict: bool = True, preserve_vram: bool = False, 
-               tiled: bool = False, tile_size: Tuple[int, int] = (512, 512), 
-               tile_overlap: Tuple[int, int] = (64, 64)) -> CausalEncoderOutput:
+    def encode(self, x: torch.FloatTensor, preserve_vram: bool = False) -> CausalEncoderOutput:
         if x.ndim == 4:
             x = x.unsqueeze(2)
-        p = super().encode(x, preserve_vram=preserve_vram, return_dict=return_dict, 
-                           tiled=tiled, tile_size=tile_size, tile_overlap=tile_overlap).latent_dist
+        p = super().encode(x, preserve_vram).latent_dist
         z = p.sample().squeeze(2)
         return CausalEncoderOutput(z, p)
 
-    def decode(self, z: torch.Tensor, preserve_vram: bool = False, return_dict: bool = True, 
-               tiled: bool = False, tile_size: Tuple[int, int] = (512, 512), 
-               tile_overlap: Tuple[int, int] = (64, 64)) -> CausalDecoderOutput:
+    def decode(self, z: torch.FloatTensor, preserve_vram: bool = False) -> CausalDecoderOutput:
         if z.ndim == 4:
             z = z.unsqueeze(2)
-        x = super().decode(z, preserve_vram=preserve_vram, return_dict=return_dict, 
-                           tiled=tiled, tile_size=tile_size, tile_overlap=tile_overlap).sample.squeeze(2)
+        x = super().decode(z, preserve_vram).sample.squeeze(2)
         return CausalDecoderOutput(x)
 
     def preprocess(self, x: torch.Tensor):

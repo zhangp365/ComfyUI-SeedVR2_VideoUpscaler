@@ -7,6 +7,7 @@ import sys
 import os
 import argparse
 import time
+import platform
 import multiprocessing as mp
 
 # Set up path before any other imports to fix module resolution
@@ -22,17 +23,18 @@ if mp.get_start_method(allow_none=True) != 'spawn':
     mp.set_start_method('spawn', force=True)
 # -------------------------------------------------------------
 # 1) Gestion VRAM (cudaMallocAsync) déjà en place
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+if platform.system() != "Darwin":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
-# 2) Pré-parse de la ligne de commande pour récupérer --cuda_device
-_pre_parser = argparse.ArgumentParser(add_help=False)
-_pre_parser.add_argument("--cuda_device", type=str, default=None)
-_pre_args, _ = _pre_parser.parse_known_args()
-if _pre_args.cuda_device is not None:
-    device_list_env = [x.strip() for x in _pre_args.cuda_device.split(',') if x.strip()!='']
-    if len(device_list_env) == 1:
-        # Single GPU: restrict visibility now
-        os.environ["CUDA_VISIBLE_DEVICES"] = device_list_env[0]
+    # 2) Pré-parse de la ligne de commande pour récupérer --cuda_device
+    _pre_parser = argparse.ArgumentParser(add_help=False)
+    _pre_parser.add_argument("--cuda_device", type=str, default=None)
+    _pre_args, _ = _pre_parser.parse_known_args()
+    if _pre_args.cuda_device is not None:
+        device_list_env = [x.strip() for x in _pre_args.cuda_device.split(',') if x.strip()!='']
+        if len(device_list_env) == 1:
+            # Single GPU: restrict visibility now
+            os.environ["CUDA_VISIBLE_DEVICES"] = device_list_env[0]
 
 # -------------------------------------------------------------
 # 3) Imports lourds (torch, etc.) après la configuration env
@@ -273,10 +275,11 @@ def apply_temporal_overlap_blending(frames_tensor, batch_size, overlap):
 
 def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
     """Worker process that performs upscaling on a slice of frames using a dedicated GPU."""
-    # 1. Limit CUDA visibility to the chosen GPU BEFORE importing torch-heavy deps
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
-    # Keep same cudaMallocAsync setting
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+    if platform.system() != "Darwin":
+        # 1. Limit CUDA visibility to the chosen GPU BEFORE importing torch-heavy deps
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+        # Keep same cudaMallocAsync setting
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
     import torch  # local import inside subprocess
     from src.core.model_manager import configure_runner
@@ -471,7 +474,8 @@ def parse_arguments():
                         help="Enable VRAM preservation mode")
     parser.add_argument("--debug", action="store_true",
                         help="Enable debug logging")
-    parser.add_argument("--cuda_device", type=str, default=None,
+    if platform.system() != "Darwin":
+        parser.add_argument("--cuda_device", type=str, default=None,
                         help="CUDA device id(s). Single id (e.g., '0') or comma-separated list '0,1' for multi-GPU")
     parser.add_argument("--blocks_to_swap", type=int, default=0,
                         help="Number of blocks to swap for VRAM optimization (default: 0, disabled), up to 32 for 3B model, 36 for 7B")
@@ -508,11 +512,15 @@ def main():
         print(f"Error: VAE tile overlap {args.vae_tile_overlap} must be smaller than tile size {args.vae_tile_size}")
         sys.exit(1)
     
-    # Show actual CUDA device visibility
-    debug.log(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}", category="device")
-    if torch.cuda.is_available():
-        debug.log(f"torch.cuda.device_count(): {torch.cuda.device_count()}", category="device")
-        debug.log(f"Using device index 0 inside script (mapped to selected GPU)", category="device")
+    if args.debug:
+        if platform.system() == "Darwin":
+            print("You are running on macOS and will use the MPS backend!")
+        else:
+            # Show actual CUDA device visibility
+            debug.log(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}", category="device")
+            if torch.cuda.is_available():
+                debug.log(f"torch.cuda.device_count(): {torch.cuda.device_count()}", category="device")
+                debug.log(f"Using device index 0 inside script (mapped to selected GPU)", category="device")
     
     try:
         # Ensure --output is a directory when using PNG format
@@ -537,15 +545,21 @@ def main():
         # debug.log(f"Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB", category="memory")
 
         # Parse GPU list
-        device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
-        debug.log(f"Using devices: {device_list}", category="device")
+        if platform.system() == "Darwin":
+            device_list = ["0"]
+        else:
+            device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
+        
+        if args.debug:
+            debug.log(f"Using devices: {device_list}", category="device")
         processing_start = time.time()
         download_weight(args.model, args.model_dir)
         result = _gpu_processing(frames_tensor, device_list, args)
         generation_time = time.time() - processing_start
         
         debug.log(f"Generation time: {generation_time:.2f}s", category="general")
-        debug.log(f"Peak VRAM usage: {torch.cuda.max_memory_allocated() / 1024**3:.2f}GB", category="memory")
+        if platform.system() != "Darwin":
+            debug.log(f"Peak VRAM usage: {torch.cuda.max_memory_allocated() / 1024**3:.2f}GB", category="memory")
 
         if args.temporal_overlap > 0:
             debug.log(f"Applying temporal overlap with blending", category="generation")

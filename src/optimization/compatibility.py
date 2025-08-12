@@ -6,6 +6,7 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
+import platform
 import types
 from typing import List, Tuple, Union, Any, Optional
 
@@ -304,17 +305,24 @@ class FP8CompatibleDiT(torch.nn.Module):
             k = k.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             v = v.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             
-            # Use optimized SDPA
-            with torch.backends.cuda.sdp_kernel(
-                enable_flash=True,
-                enable_math=True,
-                enable_mem_efficient=True
-            ):
+            if platform.system() == "Darwin":
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=0.0,
                     is_causal=False
                 )
+            else:
+                # Use optimized SDPA
+                with torch.backends.cuda.sdp_kernel(
+                    enable_flash=True,
+                    enable_math=True,
+                    enable_mem_efficient=True
+                ):
+                    attn_output = torch.nn.functional.scaled_dot_product_attention(
+                        q, k, v,
+                        dropout_p=0.0,
+                        is_causal=False
+                    )
             
             # Reshape back
             attn_output = attn_output.transpose(1, 2).contiguous().view(

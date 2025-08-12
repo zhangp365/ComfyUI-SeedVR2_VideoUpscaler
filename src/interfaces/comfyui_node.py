@@ -5,6 +5,7 @@
 import os
 import time
 import torch
+import platform
 from typing import Tuple, Dict, Any
 
 from src.utils.constants import get_base_cache_dir
@@ -196,8 +197,6 @@ class SeedVR2:
             # Clean BlockSwap with state preservation
             if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
                 cleanup_blockswap(self.runner, keep_state_for_cache=True)
-            
-            # Clear caches but keep models
             if self.runner:              
                 clear_all_caches(self.runner, debug, offload_vae=True)
 
@@ -421,7 +420,7 @@ class SeedVR2BlockSwap:
                     "BOOLEAN",
                     {
                         "default": True,
-                        "tooltip": "Use non-blocking GPU transfers for better performance.",
+                        "tooltip": "Use non-blocking GPU transfers for better performance.\n(This will always False on macOS to prevent Nan tensors)",
                     },
                 ),
                 "offload_io_components": (
@@ -464,10 +463,10 @@ The actual memory savings depend on your specific model architecture and will be
         """Create BlockSwap configuration"""
         if blocks_to_swap == 0:
             return (None,)
-        
+        _use_non_blocking = False if platform.system() == "Darwin" else use_non_blocking
         config = {
             "blocks_to_swap": blocks_to_swap,
-            "use_non_blocking": use_non_blocking,
+            "use_non_blocking": _use_non_blocking,
             "offload_io_components": offload_io_components,
         }
         
