@@ -22,6 +22,7 @@ import psutil
 from typing import Dict, Any, List, Tuple, Optional, Union
 from src.optimization.memory_manager import get_vram_usage
 from src.optimization.compatibility import call_rope_with_stability
+from src.common.distributed import get_device
 
 
 def get_module_memory_mb(module: torch.nn.Module) -> float:
@@ -79,9 +80,7 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
         model = model.dit_model
     
     # Determine devices
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.mps.is_available():
-        device = "mps"
+    device = str(get_device()) if (torch.cuda.is_available() or torch.mps.is_available()) else "cpu"
     offload_device = "cpu"
     use_non_blocking = block_swap_config.get("use_non_blocking", True)
 
@@ -283,7 +282,7 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
                 
             # Synchronize if needed
             if hasattr(model, 'use_non_blocking') and not model.use_non_blocking and torch.cuda.is_available():
-                torch.cuda.synchronize()
+                torch.cuda.synchronize(get_device())
 
             # Execute forward pass with OOM protection
             output = original_forward(*args, **kwargs)
@@ -361,7 +360,7 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
             if torch.mps.is_available():
                 torch.mps.synchronize()
             else:
-                torch.cuda.synchronize()
+                torch.cuda.synchronize(get_device())
 
         # Execute forward pass
         output = self._original_forward(*args, **kwargs)
@@ -382,7 +381,7 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
             mem = psutil.virtual_memory()
             if torch.mps.current_allocated_memory() > mem.total * 0.9:
                 torch.mps.empty_cache()
-        if torch.cuda.is_available() and torch.cuda.memory_allocated() > torch.cuda.get_device_properties(0).total_memory * 0.9:
+        if torch.cuda.is_available() and torch.cuda.memory_allocated(get_device()) > torch.cuda.get_device_properties(get_device()).total_memory * 0.9:
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
@@ -430,8 +429,7 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                             debug.log(f"RoPE device issue for {module_name}: {e}", level="WARNING", category="blockswap")
                             
                             # Get current device from parameters
-                            _device = "mps" if torch.mps.is_available() else "cuda"
-                            current_device = next(self.parameters()).device if list(self.parameters()) else torch.device(_device)
+                            current_device = next(self.parameters()).device if list(self.parameters()) else get_device()
                             
                             # Try clearing cache first (non-invasive fix)
                             if hasattr(current_fn, 'cache_clear'):

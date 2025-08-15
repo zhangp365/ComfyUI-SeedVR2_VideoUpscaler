@@ -22,6 +22,7 @@ import torch
 import time
 from src.utils.constants import get_script_directory
 from torchvision.transforms import Compose, Lambda, Normalize
+from src.common.distributed import get_device
 
 
 # Import required modules
@@ -74,9 +75,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     if debug is None:
         raise ValueError("Debug instance must be provided to generation_step")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.mps.is_available():
-        device = "mps"
+    device = get_device()
     
     # Adaptive dtype detection for optimal performance
     model_dtype = next(runner.dit.parameters()).dtype
@@ -138,9 +137,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Use adaptive autocast for optimal performance
     with torch.no_grad():
-        _device = "mps" if torch.mps.is_available() else "cuda"
-            
-        with torch.autocast(_device, autocast_dtype, enabled=True):
+        with torch.autocast(str(get_device()), autocast_dtype, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
                 conditions=conditions,
@@ -227,9 +224,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     if debug is None:
         raise ValueError("Debug instance must be provided to generation_loop")
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.mps.is_available():
-        device = "mps"
+    device = get_device() if (torch.cuda.is_available() or torch.mps.is_available()) else "cpu"
 
     # ───────────────────────────────────────────────────────────────
     # Step 1: Model Configuration & Precision Detection
@@ -406,8 +401,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             debug.end_timer("vae_to_gpu", "VAE to GPU")
             debug.start_timer("vae_encode")
             debug.log(f"VAE encoding precision: {autocast_dtype}", category="vae")
-            _device = "mps" if torch.mps.is_available() else "cuda"
-            with torch.autocast(_device, autocast_dtype, enabled=True):
+            with torch.autocast(str(device), autocast_dtype, enabled=True):
                 cond_latents = runner.vae_encode([transformed_video])
             debug.end_timer("vae_encode", "VAE encoding")
             #tps = time.time()

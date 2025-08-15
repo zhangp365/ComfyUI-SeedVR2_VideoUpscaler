@@ -20,7 +20,8 @@ from src.optimization.memory_manager import (
     clear_rope_lru_caches, 
     fast_model_cleanup, 
     fast_ram_cleanup, 
-    clear_all_caches
+    clear_all_caches,
+    get_device_list
 )
 
 # Import ComfyUI progress reporting
@@ -57,6 +58,7 @@ class SeedVR2:
         Returns:
             Dictionary defining input parameters, types, and validation
         """
+        devices = get_device_list()
         return {
             "required": {
                 "images": ("IMAGE", ),
@@ -85,40 +87,13 @@ class SeedVR2:
                     "step": 4,
                     "tooltip": "Number of frames to process per batch (recommend 4n+1 format)"
                 }),
-                "preserve_vram": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Offload models between steps to save VRAM. Slower but uses less memory."
-                }),
-                "cache_model": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Keep model and VAE in RAM between runs. Speeds up batch processing."
-                }),
-                "enable_debug": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show detailed memory usage and timing information during generation."
-                }),
-                "tiled_vae": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Use tiled VAE; slower but uses drastically less VRAM"
-                }),
-                "vae_tile_size": ("INT", {
-                    "default": 512,
-                    "min": 256,
-                    "max": 2048,
-                    "step": 256,
-                    "tooltip": "VAE tile size"
-                }),
-                "vae_tile_overlap": ("INT", {
-                    "default": 64,
-                    "min": 0,
-                    "max": 256,
-                    "step": 64,
-                    "tooltip": "VAE tile overlap"
-                }),
             },
             "optional": {
                 "block_swap_config": ("block_swap_config", {
                     "tooltip": "Optional BlockSwap configuration for additional VRAM savings"
+                }),
+                "extra_args": ("extra_args", {
+                    "tooltip": "Configure extra args"
                 }),
             }
         }
@@ -130,12 +105,27 @@ class SeedVR2:
     CATEGORY = "SEEDVR2"
 
     def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
-        batch_size: int, preserve_vram: bool, cache_model: bool, enable_debug: bool,
-        tiled_vae: bool, vae_tile_size: int, vae_tile_overlap: int,
-        block_swap_config=None) -> Tuple[torch.Tensor]:
+        batch_size: int, block_swap_config=None, extra_args=None) -> Tuple[torch.Tensor]:
         """Execute SeedVR2 video upscaling with progress reporting"""
         
         temporal_overlap = 0 
+        
+        if extra_args is None:
+            tiled_vae = True
+            vae_tile_size = 512
+            vae_tile_overlap = 64
+            preserve_vram = False
+            cache_model = False
+            enable_debug = False
+            device = devices[0]
+        else:
+            tiled_vae = extra_args["tiled_vae"]
+            vae_tile_size = extra_args["vae_tile_size"]
+            vae_tile_overlap = extra_args["vae_tile_overlap"]
+            preserve_vram = extra_args["preserve_vram"]
+            cache_model = extra_args["cache_model"]
+            enable_debug = extra_args["enable_debug"]
+            device = extra_args["device"]
         
         # Initialize or reuse debug instance
         if self.debug is None:
@@ -161,7 +151,7 @@ class SeedVR2:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, 
                                         batch_size, tiled_vae, vae_tile_size, vae_tile_overlap, 
                                         preserve_vram, temporal_overlap, 
-                                        cache_model, block_swap_config)
+                                        cache_model, device, block_swap_config)
         except Exception as e:
             self.cleanup(force_ram_cleanup=True, cache_model=cache_model, debug=self.debug)
             raise e
@@ -294,11 +284,13 @@ class SeedVR2:
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, 
                  tiled_vae, vae_tile_size, vae_tile_overlap,
-                 preserve_vram, temporal_overlap, cache_model, block_swap_config):
+                 preserve_vram, temporal_overlap, cache_model, device, block_swap_config):
         """Internal execution logic with progress tracking"""
         
         debug = self.debug
-
+        
+        os.environ["LOCAL_RANK"] = 0 if device == "none" else device.split(":")[1]
+        
         if self.runner is not None:
             current_model = getattr(self.runner, '_model_name', None)
             model_changed = current_model != model
@@ -470,18 +462,82 @@ The actual memory savings depend on your specific model architecture and will be
         }
         
         return (config,)
+    
+class SeedVR2ExtraArgs:
+    """Configure extra args"""
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        devices = get_device_list()
+        return {
+            "required": {
+                "tiled_vae": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Use tiled VAE; slower but uses drastically less VRAM"
+                }),
+                "vae_tile_size": ("INT", {
+                    "default": 512,
+                    "min": 256,
+                    "max": 2048,
+                    "step": 256,
+                    "tooltip": "VAE tile size"
+                }),
+                "vae_tile_overlap": ("INT", {
+                    "default": 64,
+                    "min": 0,
+                    "max": 256,
+                    "step": 64,
+                    "tooltip": "VAE tile overlap"
+                }),
+                "preserve_vram": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Offload models between steps to save VRAM. Slower but uses less memory."
+                }),
+                "cache_model": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep model and VAE in RAM between runs. Speeds up batch processing."
+                }),
+                "enable_debug": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Show detailed memory usage and timing information during generation."
+                }),
+                "device": (devices, {
+                    "default": devices[0]
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("extra_args",)
+    FUNCTION = "create_config"
+    CATEGORY = "SEEDVR2"
+    DESCRIPTION = "Configure extra args."
+    
+    def create_config(self, tiled_vae, vae_tile_size, vae_tile_overlap, preserve_vram, cache_model, enable_debug, device):
+        config = {
+            "tiled_vae": tiled_vae,
+            "vae_tile_size": vae_tile_size,
+            "vae_tile_overlap": vae_tile_overlap,
+            "preserve_vram": preserve_vram,
+            "cache_model": cache_model,
+            "enable_debug": enable_debug,
+            "device": device,
+        }
+        
+        return (config,)
 
 
 # ComfyUI Node Mappings
 NODE_CLASS_MAPPINGS = {
     "SeedVR2": SeedVR2,
     "SeedVR2BlockSwap": SeedVR2BlockSwap,
+    "SeedVR2ExtraArgs": SeedVR2ExtraArgs,
 }
 
 # Human-readable node display names
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SeedVR2": "SeedVR2 Video Upscaler",
     "SeedVR2BlockSwap": "SeedVR2 BlockSwap Config",
+    "SeedVR2ExtraArgs": "SeedVR2 Extra Args",
 }
 
 # Export version and metadata

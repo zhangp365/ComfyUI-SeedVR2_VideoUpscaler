@@ -47,8 +47,9 @@ def get_device() -> torch.device:
     """
     Get current rank device.
     """
-    device = "mps" if torch.mps.is_available() else "cuda"
-    return torch.device(device, get_local_rank())
+    if torch.mps.is_available():
+        return "mps"
+    return torch.device("cuda", get_local_rank())
 
 
 def barrier_if_distributed(*args, **kwargs):

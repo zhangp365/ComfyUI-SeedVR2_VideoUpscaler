@@ -379,9 +379,7 @@ class VideoDiffusionInfer():
 
         self.debug.start_timer("dit_inference")
         
-        _device = "mps" if torch.mps.is_available() else "cuda"
-        
-        with torch.autocast(_device, target_dtype, enabled=True):
+        with torch.autocast(str(get_device()), target_dtype, enabled=True):
             latents = self.sampler.sample(
                 x=latents,
                 f=lambda args: classifier_free_guidance_dispatcher(

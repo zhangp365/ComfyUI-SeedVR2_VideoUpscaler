@@ -35,6 +35,7 @@ from src.optimization.memory_manager import preinitialize_rope_cache, clear_rope
 from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
 from src.optimization.blockswap import apply_block_swap_to_dit
+from src.common.distributed import get_device
 
 # Get script directory for config paths
 script_directory = get_script_directory()
@@ -177,9 +178,9 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     debug.end_timer("runner_video_infer", "Video diffusion inference runner initialized")
     
     # Set device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.mps.is_available():
-        device = "mps"
+    device = str(get_device())
+    #if torch.mps.is_available():
+    #    device = "mps"
     
     # Configure models
     checkpoint_path = os.path.join(base_cache_dir, f'./{model}')
@@ -317,7 +318,6 @@ def configure_dit_model_inference(runner, device, checkpoint, config,
     )
 
     loading_device = "cpu" if (preserve_vram or blockswap_active) else device
-
     if blockswap_active:
         debug.log("Creating DiT model on CPU for BlockSwap (will swap blocks to GPU during inference)", category="model", force=True)
     else:

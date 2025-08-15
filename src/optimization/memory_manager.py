@@ -13,6 +13,7 @@ import psutil
 from typing import Tuple, Optional
 from src.common.cache import Cache
 from src.models.dit_v2.rope import RotaryEmbeddingBase
+from src.common.distributed import get_device
 
 try:
     from comfy import model_management as mm
@@ -20,6 +21,22 @@ try:
 except:
     COMFYUI_AVAILABLE = False
     pass
+    
+def get_device_list():
+  devs = ["none"]
+  try:
+    if hasattr(torch, "cuda") and hasattr(torch.cuda, "is_available") and torch.cuda.is_available():
+      devs += [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+  except Exception:
+    pass
+  try:
+    if hasattr(torch, "mps") and hasattr(torch.mps, "is_available") and torch.mps.is_available():
+      devs += [f"mps:{i}" for i in range(torch.mps.device_count())]
+  except Exception:
+    pass
+  if len(devs) > 1:
+    return devs[1:]
+  return devs
     
 def get_basic_vram_info():
     if torch.mps.is_available():
@@ -31,7 +48,7 @@ def get_basic_vram_info():
         if not torch.cuda.is_available():
             return {"error": "CUDA not available"}
         # Mémoire libre et totale (en bytes)
-        free_memory, total_memory = torch.cuda.mem_get_info()
+        free_memory, total_memory = torch.cuda.mem_get_info(get_device())
     
     # Conversion en GB
     free_gb = free_memory / (1024**3)
@@ -47,7 +64,7 @@ vram_info = get_basic_vram_info()
 if "error" not in vram_info:
     print(f"📊 Initial VRAM status: {vram_info['free_gb']:.2f}GB free / {vram_info['total_gb']:.2f}GB total")
 else:
-    print(f"⚠️ VRAM check: {vram_info['error']} - SeedVR2 requires an NVIDIA GPU")
+    print(f"⚠️ VRAM check: {vram_info['error']} - No available backend!")
 
 def get_vram_usage() -> Tuple[float, float, float]:
     """
@@ -63,9 +80,9 @@ def get_vram_usage() -> Tuple[float, float, float]:
         max_allocated = 0
         return allocated, reserved, max_allocated
     if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / (1024**3)
-        reserved = torch.cuda.memory_reserved() / (1024**3)
-        max_allocated = torch.cuda.max_memory_allocated() / (1024**3)
+        allocated = torch.cuda.memory_allocated(get_device()) / (1024**3)
+        reserved = torch.cuda.memory_reserved(get_device()) / (1024**3)
+        max_allocated = torch.cuda.max_memory_allocated(get_device()) / (1024**3)
         return allocated, reserved, max_allocated
     return 0, 0, 0
 
@@ -88,7 +105,7 @@ def reset_vram_peak(debug) -> None:
     """
     debug.log("Resetting VRAM peak memory statistics", category="memory")
     if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_peak_memory_stats(get_device())
 
 def preinitialize_rope_cache(runner, debug) -> None:
     """
@@ -226,7 +243,7 @@ def fast_ram_cleanup():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_peak_memory_stats(get_device())
     
     # Clear PyTorch internal caches
     try:
