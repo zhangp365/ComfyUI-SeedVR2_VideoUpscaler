@@ -375,8 +375,13 @@ class SeedVR2:
         """Progress callback for generation loop"""
         
         # Calculate batch FPS
-        _last_time = self.last_batch_time if self.last_batch_time is not None else self.debug.timers["generation_loop"]
-        batch_time = time.time() - _last_time
+        batch_time = 0
+        if self.last_batch_time is not None:
+            batch_time = time.time() - self.last_batch_time
+        elif "generation_loop" in self.debug.timers:
+            batch_time = time.time() - self.debug.timers["generation_loop"]
+        else:
+            batch_time = self.debug.timer_durations.get("generation_loop", 0)
         batch_fps = current_batch_frames / batch_time if batch_time > 0 else 0.0
         self.debug.log(f"Batch {batch_idx} - FPS: {batch_fps:.2f} frames/sec", category="timing")
         self.last_batch_time = time.time()
