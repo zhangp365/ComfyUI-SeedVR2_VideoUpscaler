@@ -296,7 +296,7 @@ class SeedVR2:
             model_changed = current_model != model
 
             if model_changed and self.runner is not None:
-                debug.log(f"Model changed from {self.current_model_name} to {model}, clearing cache...", category="cache")
+                debug.log(f"Model changed from {self.current_model} to {model}, clearing cache...", category="cache")
                 self.cleanup(
                     force_ram_cleanup=True,
                     cache_model=False,  # Don't keep old model
@@ -385,7 +385,8 @@ class SeedVR2:
     def __del__(self):
         """Destructor"""
         try:
-            self.cleanup(force_ram_cleanup=True, keep_model_cached=False, block_swap_config=None)
+            debug = self.debug
+            self.cleanup(force_ram_cleanup=True, cache_model=False, debug=debug)
         except:
             pass
 
