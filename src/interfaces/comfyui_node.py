@@ -296,7 +296,7 @@ class SeedVR2:
             model_changed = current_model != model
 
             if model_changed and self.runner is not None:
-                debug.log(f"Model changed from {self.current_model} to {model}, clearing cache...", category="cache")
+                debug.log(f"Model changed from {current_model} to {model}, clearing cache...", category="cache")
                 self.cleanup(
                     force_ram_cleanup=True,
                     cache_model=False,  # Don't keep old model
