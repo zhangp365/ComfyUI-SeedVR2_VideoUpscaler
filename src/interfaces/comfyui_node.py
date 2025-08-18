@@ -48,6 +48,7 @@ class SeedVR2:
         self.text_neg_embeds = None
         self.current_model_name = ""
         self.debug = None
+        self.last_batch_time = None
 
 
     @classmethod
@@ -372,7 +373,14 @@ class SeedVR2:
 
     def _progress_callback(self, batch_idx, total_batches, current_batch_frames, message=""):
         """Progress callback for generation loop"""
-            
+        
+        # Calculate batch FPS
+        _last_time = self.last_batch_time if self.last_batch_time is not None else self.debug.timers["generation_loop"]
+        batch_time = time.time() - _last_time
+        batch_fps = current_batch_frames / batch_time if batch_time > 0 else 0.0
+        self.debug.log(f"Batch {batch_idx} - FPS: {batch_fps:.2f} frames/sec", category="timing")
+        self.last_batch_time = time.time()
+        
         # Send numerical progress
         progress_value = int((batch_idx / total_batches) * 100)
         progress_data = {
@@ -445,7 +453,7 @@ Performance Tips:
     - Start with blocks_to_swap=16 and increase until you no longer get OOM errors or decrease if you have spare VRAM
     - Enable offload_io_components if you still need additional VRAM savings
     - Note: Even if inference succeeds, you may still OOM during VAE decoding - combine BlockSwap with VAE tiling if needed (feature in development)
-    - Keep non_blocking=True for better performance (default)
+    - Set Keep non_blocking=False for maximum RAM savings (default) or non_blocking=True for better performance
     - Combine with smaller batch_size for maximum VRAM savings
 
 The actual memory savings depend on your specific model architecture and will be shown in the debug output when enabled.
