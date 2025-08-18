@@ -411,8 +411,8 @@ class SeedVR2BlockSwap:
                 "use_non_blocking": (
                     "BOOLEAN",
                     {
-                        "default": True,
-                        "tooltip": "Use non-blocking GPU transfers for better performance.\n(This will always False on macOS to prevent Nan tensors)",
+                        "default": False,
+                        "tooltip": "Use non-blocking GPU transfers for better performance.\nA large amount of RAM will be retained, and you won't\nbe able to reclaim it until ComfyUI is terminated.\n(always disabled on macOS to prevent Nan tensors)",
                     },
                 ),
                 "offload_io_components": (
@@ -438,7 +438,7 @@ Configuration Guidelines:
     - blocks_to_swap=32-36: Maximum savings (slowest, lowest VRAM)
 
 Advanced Options:
-    - use_non_blocking: Enables asynchronous GPU transfers for better performance
+    - use_non_blocking: Enables asynchronous GPU transfers for better performance, but it will retain a lot of RAM and cannot be reclaimed
     - offload_io_components: Moves embeddings and I/O layers to CPU for additional VRAM savings (slower)
 
 Performance Tips:
