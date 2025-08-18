@@ -17,7 +17,6 @@ import torch
 from PIL import Image
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TVF
-import platform
 
 class SideResize:
     def __init__(
@@ -29,7 +28,7 @@ class SideResize:
         self.size = size
         self.downsample_only = downsample_only
         self.interpolation = interpolation
-        if platform.system() == "Darwin":
+        if torch.mps.is_available():
             self.interpolation = InterpolationMode.BILINEAR
 
     def __call__(self, image: Union[torch.Tensor, Image.Image]):

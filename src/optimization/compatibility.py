@@ -6,7 +6,6 @@ Extracted from: seedvr2.py (lines 1045-1630)
 """
 
 import torch
-import platform
 import types
 from typing import List, Tuple, Union, Any, Optional
 
@@ -51,6 +50,9 @@ class FP8CompatibleDiT(torch.nn.Module):
             self.debug.log(f"Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility", 
                           category="precision", force=True)
             self._convert_rope_freqs()
+            if torch.mps.is_available():
+                self.debug.log(f"Also converting NaDiT parameters/buffers for MPS backend", category="precision", force=True)
+                self._force_nadit_bfloat16()
             
         # Apply RoPE stabilization for numerical stability
         self._stabilize_rope_computations()
@@ -84,9 +86,45 @@ class FP8CompatibleDiT(torch.nn.Module):
             if 'RotaryEmbedding' in type(module).__name__:
                 if hasattr(module, 'rope') and hasattr(module.rope, 'freqs'):
                     if module.rope.freqs.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                        module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
+                        if  module.rope.freqs.device.type == "mps":
+                            module.rope.freqs.data = module.rope.freqs.to("cpu").to(torch.bfloat16).to("mps")
+                        else:
+                            module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
                         converted += 1
         self.debug.log(f"Converted {converted} RoPE frequency buffers", category="success")
+                        
+    def _force_nadit_bfloat16(self) -> None:
+        """🎯 Force ALL NaDiT parameters to BFloat16 to avoid promotion errors"""
+        converted_count = 0
+        original_dtype = None
+        
+        # Convert ALL parameters to BFloat16 (FP8, FP16, etc.)
+        for name, param in self.dit_model.named_parameters():
+            if original_dtype is None:
+                original_dtype = param.dtype
+            if param.dtype != torch.bfloat16:
+                if param.device.type == "mps":
+                    param_data = param.data.to("cpu").to(torch.bfloat16).to("mps")
+                else:
+                    param_data = param.data.to(torch.bfloat16)
+                param.data = param_data
+                converted_count += 1
+                
+        # Also convert buffers
+        for name, buffer in self.dit_model.named_buffers():
+            if buffer.dtype != torch.bfloat16:
+                if param.device.type == "mps":
+                    buffer_data = buffer.data.to("cpu").to(torch.bfloat16).to("mps")
+                else:
+                    buffer_data = buffer.data.to(torch.bfloat16)
+                buffer.data = buffer_data
+                converted_count += 1
+        
+        self.debug.log(f"Converted {converted_count} NaDiT parameters/buffers for MPS", category="success")
+        
+        # Update detected dtype
+        self.model_dtype = torch.bfloat16
+        self.is_fp8_model = False  # Model is no longer FP8 after conversion
 
     def _stabilize_rope_computations(self):
         """
@@ -305,7 +343,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             k = k.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             v = v.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=0.0,
@@ -372,6 +410,19 @@ class FP8CompatibleDiT(torch.nn.Module):
             args = tuple(converted_args)
             kwargs = converted_kwargs
         
+        # Force move weights to device
+        input_device = None
+        for value in kwargs.values():
+            if isinstance(value, torch.Tensor):
+                input_device = value.device
+                break
+        
+        if input_device is not None:
+            model_device = next(self.dit_model.parameters()).device
+            if model_device != input_device:
+                self.debug.log(f"Auto-moving DiT model from {model_device} to {input_device}", category="memory")
+                self.dit_model = self.dit_model.to(input_device)
+        
         # Execute forward pass
         try:
             return self.dit_model(*args, **kwargs)
@@ -398,3 +449,4 @@ class FP8CompatibleDiT(torch.nn.Module):
                 setattr(self.dit_model, name, value)
             else:
                 super().__setattr__(name, value)
+                

@@ -29,7 +29,6 @@ from diffusers.utils import is_torch_version
 from diffusers.utils.accelerate_utils import apply_forward_hook
 from einops import rearrange
 from ....common.half_precision_fixes import safe_pad_operation, safe_interpolate_operation
-import platform
 
 from ....common.distributed.advanced import get_sequence_parallel_world_size
 from ....common.logger import get_logger
@@ -134,7 +133,7 @@ class Upsample3D(Upsample2D):
             hidden_states = [hidden_states]
         # ADD BY NUMZ
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -157,7 +156,7 @@ class Upsample3D(Upsample2D):
             hidden_states = hidden_states[0]
         # ADD BY NUMZ
         if preserve_vram:
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()
@@ -320,7 +319,7 @@ class ResnetBlock3D(ResnetBlock2D):
         except Exception as e:
             if hasattr(self, 'debug') and self.debug:
                 self.debug.log("OOM second chance: ResnetBlock3D", category="warning", force=True)
-            if platform.system() == "Darwin":
+            if torch.mps.is_available():
                 torch.mps.empty_cache()
             else:
                 torch.cuda.empty_cache()

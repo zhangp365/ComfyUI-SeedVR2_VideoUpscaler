@@ -21,7 +21,6 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-import platform
 
 def get_global_rank() -> int:
     """
@@ -48,10 +47,9 @@ def get_device() -> torch.device:
     """
     Get current rank device.
     """
-    device = "cuda"
-    if platform.system() == "Darwin":
-        device = "mps"
-    return torch.device(device, get_local_rank())
+    if torch.mps.is_available():
+        return "mps"
+    return torch.device("cuda", get_local_rank())
 
 
 def barrier_if_distributed(*args, **kwargs):
