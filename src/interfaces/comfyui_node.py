@@ -118,6 +118,7 @@ class SeedVR2:
             preserve_vram = False
             cache_model = False
             enable_debug = False
+            devices = get_device_list()
             device = devices[0]
         else:
             tiled_vae = extra_args["tiled_vae"]
