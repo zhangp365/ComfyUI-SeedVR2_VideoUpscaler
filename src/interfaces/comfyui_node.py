@@ -118,6 +118,7 @@ class SeedVR2:
             preserve_vram = False
             cache_model = False
             enable_debug = False
+            devices = get_device_list()
             device = devices[0]
         else:
             tiled_vae = extra_args["tiled_vae"]
@@ -142,7 +143,7 @@ class SeedVR2:
         self.debug.log("\n─── Model Preparation ───", category="none")
         self.debug.start_timer("model_preparation")
         self.debug.log_memory_state("Execution start")
-        self.debug.log(f"Preparing model: {model}", category="general", force=True)
+        self.debug.log(f"Preparing model: {model}", category="model", force=True)
         
         # Check if download succeeded
         if not download_weight(model, debug=self.debug):
