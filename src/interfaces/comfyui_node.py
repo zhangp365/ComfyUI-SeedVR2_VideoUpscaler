@@ -128,6 +128,10 @@ class SeedVR2:
             enable_debug = extra_args["enable_debug"]
             device = extra_args["device"]
         
+        # Validate tiling parameters
+        if vae_tile_overlap >= vae_tile_size:
+            raise ValueError(f"VAE tile overlap ({vae_tile_overlap}) must be less than tile size ({vae_tile_size})")
+
         # Initialize or reuse debug instance
         if self.debug is None:
             self.debug = Debug(enabled=enable_debug)
@@ -487,21 +491,19 @@ class SeedVR2ExtraArgs:
             "required": {
                 "tiled_vae": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Use tiled VAE; slower but uses drastically less VRAM"
+                    "tooltip": "Process VAE in tiles to reduce VRAM usage but slower with potential artifacts. Only enable if running out of memory."
                 }),
                 "vae_tile_size": ("INT", {
                     "default": 512,
-                    "min": 256,
-                    "max": 2048,
-                    "step": 256,
-                    "tooltip": "VAE tile size"
+                    "min": 64,
+                    "step": 32,
+                    "tooltip": "VAE tile size in pixels. Smaller = less VRAM but more seams/artifacts and slower. Larger = more VRAM but better quality and faster."
                 }),
                 "vae_tile_overlap": ("INT", {
                     "default": 64,
                     "min": 0,
-                    "max": 256,
-                    "step": 64,
-                    "tooltip": "VAE tile overlap"
+                    "step": 32,
+                    "tooltip": "Pixel overlap between tiles to reduce visible seams. Higher = better blending but slower processing."
                 }),
                 "preserve_vram": ("BOOLEAN", {
                     "default": False,
