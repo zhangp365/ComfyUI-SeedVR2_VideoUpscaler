@@ -76,65 +76,6 @@
       "widgets_values": []
     },
     {
-      "id": 8,
-      "type": "SeedVR2",
-      "pos": [
-        1650,
-        130
-      ],
-      "size": [
-        270,
-        194
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "label": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 5
-        },
-        {
-          "label": "block_swap_config",
-          "name": "block_swap_config",
-          "shape": 7,
-          "type": "block_swap_config",
-          "link": 9
-        },
-        {
-          "label": "extra_args",
-          "name": "extra_args",
-          "shape": 7,
-          "type": "extra_args",
-          "link": 10
-        }
-      ],
-      "outputs": [
-        {
-          "label": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            8
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "numz/ComfyUI-SeedVR2_VideoUpscaler",
-        "ver": "12aefc08bb302fa595a5938e1520522dc7246d7c",
-        "Node name for S&R": "SeedVR2"
-      },
-      "widgets_values": [
-        "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
-        100,
-        "randomize",
-        1072,
-        5
-      ]
-    },
-    {
       "id": 9,
       "type": "SeedVR2BlockSwap",
       "pos": [
@@ -208,6 +149,65 @@
         false,
         false,
         "cuda:0"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "SeedVR2",
+      "pos": [
+        1650,
+        130
+      ],
+      "size": [
+        270,
+        194
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "label": "block_swap_config",
+          "name": "block_swap_config",
+          "shape": 7,
+          "type": "block_swap_config",
+          "link": 9
+        },
+        {
+          "label": "extra_args",
+          "name": "extra_args",
+          "shape": 7,
+          "type": "extra_args",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "label": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "numz/ComfyUI-SeedVR2_VideoUpscaler",
+        "ver": "12aefc08bb302fa595a5938e1520522dc7246d7c",
+        "Node name for S&R": "SeedVR2"
+      },
+      "widgets_values": [
+        "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+        100,
+        "randomize",
+        1072,
+        1
       ]
     }
   ],
