@@ -142,7 +142,7 @@ class SeedVR2:
         self.debug.log("\n─── Model Preparation ───", category="none")
         self.debug.start_timer("model_preparation")
         self.debug.log_memory_state("Execution start")
-        self.debug.log(f"Preparing model: {model}", category="general", force=True)
+        self.debug.log(f"Preparing model: {model}", category="model", force=True)
         
         # Check if download succeeded
         if not download_weight(model, debug=self.debug):
