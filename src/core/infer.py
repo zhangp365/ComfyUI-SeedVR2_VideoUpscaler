@@ -68,7 +68,7 @@ def optimized_channels_to_second(tensor):
         return tensor.permute(*dims)
 
 class VideoDiffusionInfer():
-    def __init__(self, config: DictConfig, debug=None,  vae_tiling_enabled: bool = False, 
+    def __init__(self, config: DictConfig, debug=None,  vae_tiling_enabled: bool = False,
                  vae_tile_size: Tuple[int, int] = (512, 512), vae_tile_overlap: Tuple[int, int] = (64, 64)):
         # Check if debug instance is available
         if debug is None:
@@ -78,6 +78,9 @@ class VideoDiffusionInfer():
         self.vae_tiling_enabled = vae_tiling_enabled
         self.vae_tile_size = vae_tile_size
         self.vae_tile_overlap = vae_tile_overlap
+
+        # Keep the VAE on the GPU between decode calls
+        self.keep_vae_in_vram: bool = False
         
     def get_condition(self, latent: Tensor, latent_blur: Tensor, task: str) -> Tensor:
         t, h, w, c = latent.shape
@@ -207,6 +210,8 @@ class VideoDiffusionInfer():
 
             self.debug.log(f"Latents batch shape: {latents[0].shape}", category="info")
             self.debug.start_timer("vae_decode")
+            # If the user wants to keep the VAE resident, do not let the VAE free its buffers
+            internal_preserve_vram = preserve_vram and not getattr(self, 'keep_vae_in_vram', False)
             for i, latent in enumerate(latents):
                 effective_dtype = target_dtype if target_dtype is not None else dtype
                 latent = latent.to(device, effective_dtype, non_blocking=True)
@@ -215,7 +220,7 @@ class VideoDiffusionInfer():
                 latent = latent.squeeze(2)
 
                 sample = self.vae.decode(
-                    latent, preserve_vram=preserve_vram,
+                    latent, preserve_vram=internal_preserve_vram,
                     tiled=use_tiling, tile_size=self.vae_tile_size,
                     tile_overlap=self.vae_tile_overlap).sample
 
