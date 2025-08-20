@@ -128,6 +128,7 @@ class SeedVR2:
             cache_model = extra_args["cache_model"]
             enable_debug = extra_args["enable_debug"]
             device = extra_args["device"]
+            keep_vae_loaded = extra_args.get("keep_vae_loaded", False)
         
         # Validate tiling parameters
         if vae_tile_overlap >= vae_tile_size:
@@ -156,7 +157,7 @@ class SeedVR2:
         try:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, 
                                         batch_size, tiled_vae, vae_tile_size, vae_tile_overlap, 
-                                        preserve_vram, temporal_overlap, 
+                                        preserve_vram, keep_vae_loaded, temporal_overlap, 
                                         cache_model, device, block_swap_config)
         except Exception as e:
             self.cleanup(force_ram_cleanup=True, cache_model=cache_model, debug=self.debug)
@@ -193,7 +194,8 @@ class SeedVR2:
             if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
                 cleanup_blockswap(self.runner, keep_state_for_cache=True)
             if self.runner:              
-                clear_all_caches(self.runner, debug, offload_vae=True)
+                offload = not getattr(self.runner, 'keep_vae_in_vram', False)
+                clear_all_caches(self.runner, debug, offload_vae=offload)
 
             debug.log("Models kept in RAM for next run", category="store")
             
@@ -290,7 +292,7 @@ class SeedVR2:
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, 
                  tiled_vae, vae_tile_size, vae_tile_overlap,
-                 preserve_vram, temporal_overlap, cache_model, device, block_swap_config):
+                 preserve_vram, keep_vae_loaded, temporal_overlap, cache_model, device, block_swap_config):
         """Internal execution logic with progress tracking"""
         
         debug = self.debug
@@ -323,6 +325,9 @@ class SeedVR2:
             cached_runner=self.runner if cache_model else None
         )
         
+        # Set whether to keep the VAE in VRAM for this run
+        self.runner.keep_vae_in_vram = bool(keep_vae_loaded)
+
         self.current_model_name = model
         debug.log_memory_state("Model preparation completed")
 
@@ -510,6 +515,10 @@ class SeedVR2ExtraArgs:
                     "default": False,
                     "tooltip": "Offload models between steps to save VRAM. Slower but uses less memory."
                 }),
+                "keep_vae_loaded_during_decode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Keep the VAE in GPU memory during decode for better speed, even if preserve_vram is set to true",
+                }),
                 "cache_model": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Keep model and VAE in RAM between runs. Speeds up batch processing."
@@ -529,12 +538,13 @@ class SeedVR2ExtraArgs:
     CATEGORY = "SEEDVR2"
     DESCRIPTION = "Configure extra args."
     
-    def create_config(self, tiled_vae, vae_tile_size, vae_tile_overlap, preserve_vram, cache_model, enable_debug, device):
+    def create_config(self, tiled_vae, vae_tile_size, vae_tile_overlap, preserve_vram, keep_vae_loaded_during_decode, cache_model, enable_debug, device):
         config = {
             "tiled_vae": tiled_vae,
             "vae_tile_size": vae_tile_size,
             "vae_tile_overlap": vae_tile_overlap,
             "preserve_vram": preserve_vram,
+            "keep_vae_loaded": keep_vae_loaded_during_decode,
             "cache_model": cache_model,
             "enable_debug": enable_debug,
             "device": device,
