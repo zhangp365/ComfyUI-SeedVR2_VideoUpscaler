@@ -453,7 +453,9 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
             # Clean VRAM after each batch when preserve_vram is active
             if preserve_vram:
-                clear_all_caches(runner, debug, offload_vae=True)
+                # Only offload the VAE when we are not keeping it resident
+                offload = not getattr(runner, 'keep_vae_in_vram', False)
+                clear_all_caches(runner, debug, offload_vae=offload)
             #del transformed_video
             #clear_vram_cache()
             # Log memory state at the end of each batch
@@ -469,7 +471,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         text_pos_embeds = text_pos_embeds.to("cpu")
         text_neg_embeds = text_neg_embeds.to("cpu")
         runner.dit.to("cpu")
-        runner.vae.to("cpu")
+        if not getattr(runner, 'keep_vae_in_vram', False):
+            runner.vae.to("cpu")
         if torch.mps.is_available():
             torch.mps.empty_cache()
         else:
