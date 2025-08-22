@@ -10,9 +10,8 @@ import gc
 import sys
 import time
 import psutil
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Dict, Any
 from src.common.cache import Cache
-from src.models.dit_v2.rope import RotaryEmbeddingBase
 from src.common.distributed import get_device
 
 try:
@@ -286,7 +285,7 @@ def manage_vae_device(runner, target_device: str, preserve_vram: bool = False,
     # Log the movement
     if debug:
         if target_type == 'cpu':
-            debug.log(f"Moving VAE to CPU ({reason})", category="memory")
+            debug.log(f"Moving VAE to CPU ({reason})", category="general")
         else:
             debug.log(f"Moving VAE from {current_type} to {target_device} ({reason})", category="memory")
     
@@ -314,7 +313,7 @@ def reset_vram_peak(debug) -> None:
             torch.cuda.reset_peak_memory_stats(device)
         # MPS doesn't support peak memory reset
     except Exception as e:
-        debug.log(f"Failed to reset peak memory stats: {e}", category="warning")
+        debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
 
 def preinitialize_rope_cache(runner, debug) -> None:
     """
@@ -378,7 +377,7 @@ def preinitialize_rope_cache(runner, debug) -> None:
                                     return rope_module.get_freqs(vid_shape.cpu(), txt_shape.cpu())
                                     
                         except Exception as e:
-                            debug.log(f"Failed for {cache_key}: {e}", level="WARNING", category="cache")
+                            debug.log(f"Failed pre-initializing RoPE cache for {cache_key}: {e}", level="ERROR", category="setup", force=True)
                             # Return empty tensors as fallback
                             clear_memory(debug=debug, full=True, force=True)
                             time.sleep(1)
@@ -389,7 +388,7 @@ def preinitialize_rope_cache(runner, debug) -> None:
                     temp_cache(cache_key, compute_freqs)
                 
             except Exception as e:
-                debug.log(f"Error in module {name}: {e}", level="ERROR", category="cache")
+                debug.log(f"Error in module {name}: {e}", level="ERROR", category="setup", force="True")
             finally:
                 # Restore to original device
                 rope_module.to(original_device)
@@ -401,8 +400,8 @@ def preinitialize_rope_cache(runner, debug) -> None:
             runner.cache = temp_cache
         
     except Exception as e:
-        debug.log(f"Error during RoPE pre-init: {e}", level="WARNING", category="setup", force=True)
-        debug.log("Model will work but could have OOM at first launch", level="WARNING", category="setup", force=True)
+        debug.log(f"Error during RoPE pre-init: {e}", level="ERROR", category="setup", force=True)
+        debug.log("Model will work but could have OOM at first launch", level="WARNING", category="info", force=True)
 
 
 def clear_rope_lru_caches(model) -> int:

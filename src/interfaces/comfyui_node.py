@@ -128,7 +128,6 @@ class SeedVR2:
             cache_model = extra_args["cache_model"]
             enable_debug = extra_args["enable_debug"]
             device = extra_args["device"]
-            keep_vae_loaded = extra_args.get("keep_vae_loaded", False)
         
         # Validate tiling parameters
         if vae_tile_overlap >= vae_tile_size:
@@ -139,16 +138,6 @@ class SeedVR2:
             self.debug = Debug(enabled=enable_debug)
         else:
             self.debug.enabled = enable_debug
-            
-        self.debug.start_timer("total_execution")
-        self.debug.log("\n─── Model Preparation ───", category="none")
-
-        # Reset PyTorch's global peak memory stats for clean generation metrics
-        reset_vram_peak(self.debug)
-        
-        self.debug.log_memory_state("Before model preparation", detailed_tensors=False)
-        self.debug.start_timer("model_preparation")
-        self.debug.log(f"Preparing model: {model}", category="model", force=True)
         
         # Check if download succeeded
         if not download_weight(model, debug=self.debug):
@@ -161,7 +150,7 @@ class SeedVR2:
         try:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, 
                                         batch_size, tiled_vae, vae_tile_size, vae_tile_overlap, 
-                                        preserve_vram, keep_vae_loaded, temporal_overlap, 
+                                        preserve_vram, temporal_overlap, 
                                         cache_model, device, block_swap_config)
         except Exception as e:
             self.cleanup(cache_model=cache_model, debug=self.debug)
@@ -201,9 +190,6 @@ class SeedVR2:
             debug.log("Models kept in RAM for next run", category="store")
             
         else:
-            # Full cleanup
-            debug.log("Performing full cleanup", category="cleanup")
-
             if self.runner:
                 # Clean BlockSwap if active
                 if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
@@ -233,7 +219,7 @@ class SeedVR2:
                         # Delete the entire dit (wrapper or direct)
                         complete_model_deletion(self.runner.dit)
                     except Exception as e:
-                        debug.log(f"Warning during DiT cleanup: {e}", category="warning")
+                        debug.log(f"Warning during DiT cleanup: {e}", level="WARNING", category="cleanup", force="True")
                     finally:
                         self.runner.dit = None
                 
@@ -242,7 +228,7 @@ class SeedVR2:
                     try:
                         complete_model_deletion(self.runner.vae)
                     except Exception as e:
-                        debug.log(f"Warning during VAE cleanup: {e}", category="warning")
+                        debug.log(f"Warning during VAE cleanup: {e}", level="WARNING", category="cleanup", force="True")
                     finally:
                         self.runner.vae = None
                 
@@ -275,11 +261,18 @@ class SeedVR2:
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, 
                  tiled_vae, vae_tile_size, vae_tile_overlap,
-                 preserve_vram, keep_vae_loaded, temporal_overlap, cache_model, device, block_swap_config):
+                 preserve_vram, temporal_overlap, cache_model, device, block_swap_config):
         """Internal execution logic with progress tracking"""
         
         debug = self.debug
         
+        debug.start_timer("total_execution")
+        debug.log("\n━━━━━━━━━ Model Preparation ━━━━━━━━━", category="none")
+
+        # Initial memory state
+        debug.log_memory_state("Before model preparation", detailed_tensors=False)
+        debug.start_timer("model_preparation")
+
         os.environ["LOCAL_RANK"] = 0 if device == "none" else device.split(":")[1]
         
         if self.runner is not None:
@@ -332,12 +325,29 @@ class SeedVR2:
                 swap_summary = debug.get_swap_summary()
                 if swap_summary and swap_summary.get('total_swaps', 0) > 0:
                     total_time = swap_summary.get('block_total_ms', 0) + swap_summary.get('io_total_ms', 0)
-                    debug.log(f"BlockSwap overhead: {total_time:.1f}ms across {swap_summary['total_swaps']} swaps", category="blockswap")
+                    debug.log(f"BlockSwap overhead: {total_time:.1f}ms", category="blockswap")
+                    debug.log(f"  Total swaps: {swap_summary['total_swaps']}", category="blockswap")
+                    
+                    # Show block swap details
+                    if 'block_swaps' in swap_summary and swap_summary['block_swaps'] > 0:
+                        avg_ms = swap_summary.get('block_avg_ms', 0)
+                        total_ms = swap_summary.get('block_total_ms', 0)
+                        min_ms = swap_summary.get('block_min_ms', 0)
+                        max_ms = swap_summary.get('block_max_ms', 0)
+                        
+                        debug.log(f"  Block swaps: {swap_summary['block_swaps']} "
+                                f"(avg: {avg_ms:.1f}ms, min: {min_ms:.1f}ms, max: {max_ms:.1f}ms, total: {total_ms:.1f}ms)", 
+                                category="blockswap")
+                        
+                        # Show most frequently swapped block
+                        if 'most_swapped_block' in swap_summary:
+                            debug.log(f"  Most swapped: Block {swap_summary['most_swapped_block']} "
+                                    f"({swap_summary['most_swapped_count']} times)", category="blockswap")
 
-        debug.end_timer("generation_loop", "Video generation completed", show_breakdown=True)
+        debug.end_timer("generation_loop", "Video generation", show_breakdown=True)
         debug.log_memory_state("After video generation", detailed_tensors=False)
        
-        debug.log("\n─── Final Cleanup ───", category="none")
+        debug.log("\n━━━━━━━━━ Final Cleanup ━━━━━━━━━", category="none")
         debug.start_timer("final_cleanup")
         
         # Perform cleanup (this already calls clear_memory internally)
@@ -348,18 +358,18 @@ class SeedVR2:
             sample = sample.cpu()
         
         # Log final memory state after ALL cleanup is done
-        debug.end_timer("final_cleanup", "Final cleanup completed", show_breakdown=True)
+        debug.end_timer("final_cleanup", "Final cleanup", show_breakdown=True)
         debug.log_memory_state("After final cleanup", detailed_tensors=True)
         
         # Final timing summary
-        debug.log("\n─────────", category="none")
+        debug.log("\n━━━━━━━━━━━━━━━━━━", category="none")
         child_times = {
             "Model preparation": debug.timer_durations.get("model_preparation", 0),
             "Video generation": debug.timer_durations.get("generation_loop", 0),
             "Final cleanup": debug.timer_durations.get("final_cleanup", 0)
         }
         debug.end_timer("total_execution", "Total execution", show_breakdown=True, custom_children=child_times)
-        debug.log("─────────", category="none")
+        debug.log("━━━━━━━━━━━━━━━━━━", category="none")
         
         # Clear history for next run (do this last, after all logging)
         debug.clear_history()
@@ -509,10 +519,6 @@ class SeedVR2ExtraArgs:
                     "default": False,
                     "tooltip": "Offload models between steps to save VRAM. Slower but uses less memory."
                 }),
-                "keep_vae_loaded_during_decode": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Keep the VAE in GPU memory during decode for better speed, even if preserve_vram is set to true",
-                }),
                 "cache_model": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Keep model and VAE in RAM between runs. Speeds up batch processing."
@@ -532,13 +538,12 @@ class SeedVR2ExtraArgs:
     CATEGORY = "SEEDVR2"
     DESCRIPTION = "Configure extra args."
     
-    def create_config(self, tiled_vae, vae_tile_size, vae_tile_overlap, preserve_vram, keep_vae_loaded_during_decode, cache_model, enable_debug, device):
+    def create_config(self, tiled_vae, vae_tile_size, vae_tile_overlap, preserve_vram, cache_model, enable_debug, device):
         config = {
             "tiled_vae": tiled_vae,
             "vae_tile_size": vae_tile_size,
             "vae_tile_overlap": vae_tile_overlap,
             "preserve_vram": preserve_vram,
-            "keep_vae_loaded": keep_vae_loaded_during_decode,
             "cache_model": cache_model,
             "enable_debug": enable_debug,
             "device": device,

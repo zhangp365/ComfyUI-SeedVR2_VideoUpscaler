@@ -7,7 +7,6 @@ Extracted from: seedvr2.py (lines 1045-1630)
 
 import torch
 import types
-from typing import List, Tuple, Union, Any, Optional
 
 
 def call_rope_with_stability(method, *args, **kwargs):
@@ -48,10 +47,10 @@ class FP8CompatibleDiT(torch.nn.Module):
             # Only FP8 models need RoPE frequency conversion
             model_variant = "7B" if self._is_nadit_model() else "3B" if self._is_nadit_v2_model() else "Unknown"
             self.debug.log(f"Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility", 
-                          category="precision", force=True)
+                          category="precision")
             self._convert_rope_freqs()
             if torch.mps.is_available():
-                self.debug.log(f"Also converting NaDiT parameters/buffers for MPS backend", category="precision", force=True)
+                self.debug.log(f"Also converting NaDiT parameters/buffers for MPS backend", category="setup", force=True)
                 self._force_nadit_bfloat16()
             
         # Apply RoPE stabilization for numerical stability
@@ -143,7 +142,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             return
         
         self.debug.start_timer("stabilize_rope")
-        self.debug.log(f"Stabilizing RoPE computations for numerical stability", category="precision")
+        self.debug.log(f"Stabilizing RoPE computations for numerical stability", category="setup")
         
         rope_count = 0
         
@@ -243,7 +242,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             return True
             
         except Exception as e:
-            self.debug.log(f"Failed to optimize attention layer '{name}': {e}", level="WARNING", category="model")
+            self.debug.log(f"Failed to optimize attention layer '{name}': {e}", level="WARNING", category="model", force=True)
             return False
     
     def _create_flash_attention_forward(self, module: torch.nn.Module, layer_name: str):
@@ -410,24 +409,11 @@ class FP8CompatibleDiT(torch.nn.Module):
             args = tuple(converted_args)
             kwargs = converted_kwargs
         
-        # Force move weights to device
-        input_device = None
-        for value in kwargs.values():
-            if isinstance(value, torch.Tensor):
-                input_device = value.device
-                break
-        
-        if input_device is not None:
-            model_device = next(self.dit_model.parameters()).device
-            if model_device != input_device:
-                self.debug.log(f"Auto-moving DiT model from {model_device} to {input_device}", category="memory")
-                self.dit_model = self.dit_model.to(input_device)
-        
         # Execute forward pass
         try:
             return self.dit_model(*args, **kwargs)
         except Exception as e:
-            self.debug.log(f"Forward pass error: {e}", category="error", force=True)
+            self.debug.log(f"Forward pass error: {e}", level="ERROR", category="generation", force=True)
             if self.is_fp8_model:
                 self.debug.log(f"FP8 model - converted FP8 tensors to BFloat16", category="info", force=True)
             else:

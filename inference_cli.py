@@ -297,7 +297,7 @@ def _worker_process(proc_idx, device_id, frames_np, shared_args, return_queue):
     model_dir = shared_args["model_dir"]
     model_name = shared_args["model"]
     # ensure model weights present (each process checks but very fast if already downloaded)
-    worker_debug.log(f"Configuring runner for device {device_id}", category="general")
+    worker_debug.log(f"Configuring runner for device {device_id}", category="setup")
     runner = configure_runner(model_name, model_dir, shared_args["preserve_vram"], worker_debug, block_swap_config=shared_args["block_swap_config"], vae_tiling_enabled=shared_args["vae_tiling_enabled"], vae_tile_size=shared_args["vae_tile_size"], vae_tile_overlap=shared_args["vae_tile_overlap"])
 
     # Run generation
@@ -543,7 +543,7 @@ def main():
             args.prepend_frames
         )
         
-        debug.log(f"Frame extraction time: {time.time() - start_time:.2f}s", category="general")
+        debug.log(f"Frame extraction time: {time.time() - start_time:.2f}s", category="timing")
         # debug.log(f"Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB", category="memory")
 
         # Parse GPU list
@@ -559,7 +559,7 @@ def main():
         result = _gpu_processing(frames_tensor, device_list, args)
         generation_time = time.time() - processing_start
         
-        debug.log(f"Generation time: {generation_time:.2f}s", category="general")
+        debug.log(f"Generation time: {generation_time:.2f}s", category="timing")
         if platform.system() != "Darwin":
             debug.log(f"Peak VRAM usage: {torch.cuda.max_memory_allocated() / 1024**3:.2f}GB", category="memory")
 
@@ -583,14 +583,14 @@ def main():
             save_start = time.time()
             save_frames_to_png(result, output_dir, base_name)
 
-            debug.log(f"Save time: {time.time() - save_start:.2f}s", category="general")
+            debug.log(f"Save time: {time.time() - save_start:.2f}s", category="timing")
 
         else:
             # Save video
             debug.log(f"Saving upscaled video to: {args.output}", category="file")
             save_start = time.time()
             save_frames_to_video(result, args.output, original_fps)
-            debug.log(f"Save time: {time.time() - save_start:.2f}s", category="general")
+            debug.log(f"Save time: {time.time() - save_start:.2f}s", category="timing")
         
         total_time = time.time() - start_time
         debug.log(f"Upscaling completed successfully!", category="success", force=True)
@@ -602,7 +602,7 @@ def main():
         debug.log(f"Average FPS: {len(frames_tensor) / generation_time:.2f} frames/sec", category="timing", force=True)
         
     except Exception as e:
-        debug.log(f"Error during processing: {e}", category="error", force=True)
+        debug.log(f"Error during processing: {e}", level="ERROR", category="generation", force=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)

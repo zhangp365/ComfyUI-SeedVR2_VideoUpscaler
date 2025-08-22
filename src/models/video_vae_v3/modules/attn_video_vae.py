@@ -147,7 +147,7 @@ class Upsample3D(Upsample2D):
             except Exception as e:
                 debug = getattr(self, 'debug', None)
                 if debug:
-                    debug.log("OOM recovery: Upsample3D upscale_conv", category="warning", force=True)
+                    debug.log(f"OOM - Clearing memory and retrying: Upsample3D upscale_conv: {e}", level="WARNING", category="memory", force=True)
                 clear_memory(debug=debug, full=True, force=True)
                 time.sleep(1)
                 hidden_states[i] = self.upscale_conv(hidden_states[i])
@@ -176,7 +176,7 @@ class Upsample3D(Upsample2D):
             except Exception as e:
                 debug = getattr(self, 'debug', None)
                 if debug:
-                    debug.log("OOM recovery: Upsample3D conv", category="warning", force=True)
+                    debug.log(f"OOM - Clearing memory and retrying: Upsample3D conv: {e}", level="WARNING", category="memory", force=True)
                 clear_memory(debug=debug, full=True, force=True)
                 time.sleep(1)
                 if self.name == "conv":
@@ -336,7 +336,7 @@ class ResnetBlock3D(ResnetBlock2D):
         except Exception as e:
             debug = getattr(self, 'debug', None)
             if debug:
-                debug.log("OOM recovery: ResnetBlock3D", category="warning", force=True)
+                debug.log(f"OOM - Clearing memory and retrying: ResnetBlock3D: {e}", level="WARNING", category="memory", force=True)
             clear_memory(debug=debug, full=True, force=True)
             time.sleep(1) 
             hidden_states = self.nonlinearity(hidden_states) 

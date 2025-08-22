@@ -7,9 +7,8 @@ for all pipeline stages, including BlockSwap operations.
 
 import time
 import torch
-import psutil
 import gc
-from typing import Optional, List, Dict, Any, Tuple, Union, Set
+from typing import Optional, List, Dict, Any, Union
 from src.optimization.memory_manager import get_vram_usage, get_basic_vram_info, get_ram_usage, reset_vram_peak
 from contextlib import contextmanager
 
@@ -245,15 +244,21 @@ class Debug:
         # Collect memory metrics efficiently
         memory_info = self._collect_memory_metrics()
         
-        # Format and log basic memory info
-        log_msg = f"{label}: {memory_info['summary']}"
-        
-        # Add tensor info if requested
+        # Show category
+        self.log(f"{label}:", category="memory")
+
+        # Show VRAM
+        if memory_info['summary_vram']:
+            self.log(f"{memory_info['summary_vram']}", category="memory")
+
+        # Show RAM
+        if memory_info['summary_ram']:
+            self.log(f"{memory_info['summary_ram']}", category="memory")
+
+        # Show tensors
         if show_tensors:
             tensor_stats = self._collect_tensor_stats(detailed=detailed_tensors)
-            log_msg += tensor_stats['summary']
-        
-        self.log(log_msg, category="memory")
+            self.log(f"{tensor_stats['summary']}", category="memory")
         
         # Show diff from last checkpoint
         if show_diff and self.memory_checkpoints:
@@ -281,7 +286,8 @@ class Debug:
             'ram_available': 0.0,
             'ram_total': 0.0,
             'ram_others': 0.0,
-            'summary': ""
+            'summary_vram': "",
+            'summary_ram': ""
         }
         
         # VRAM metrics
@@ -299,28 +305,26 @@ class Debug:
                 metrics['vram_total'] = vram_info["total_gb"]
                 
                 backend = "MPS" if torch.mps.is_available() else "VRAM"
-                vram_str = (f"[{backend}] {metrics['vram_allocated']:.2f}GB allocated / "
+                metrics['summary_vram'] = (f"  [{backend}] {metrics['vram_allocated']:.2f}GB allocated / "
                         f"{metrics['vram_reserved']:.2f}GB reserved / "
                         f"Peak: {metrics['vram_peak_since_last']:.2f}GB / "
                         f"{metrics['vram_free']:.2f}GB free / "
                         f"{metrics['vram_total']:.2f}GB total")
             else:
-                vram_str = "[CPU mode]"
+                metrics['summary_vram'] = ""
         else:
-            vram_str = "[CPU mode]"
+            metrics['summary_vram'] = ""
         
         # RAM metrics using new function
         metrics['ram_process'], metrics['ram_available'], metrics['ram_total'], metrics['ram_others'] = get_ram_usage()
         
         if metrics['ram_total'] > 0:
-            ram_str = (f" --- [RAM] {metrics['ram_process']:.1f}GB process / "
-                      f"{metrics['ram_others']:.1f}GB others / "
-                      f"{metrics['ram_available']:.1f}GB free / "
-                      f"{metrics['ram_total']:.1f}GB total")
+            metrics['summary_ram'] = (f"  [RAM] {metrics['ram_process']:.2f}GB process / "
+                      f"{metrics['ram_others']:.2f}GB others / "
+                      f"{metrics['ram_available']:.2f}GB free / "
+                      f"{metrics['ram_total']:.2f}GB total")
         else:
-            ram_str = ""
-        
-        metrics['summary'] = vram_str + ram_str
+            metrics['summary_ram'] = ""
         
         # Update VRAM history for tracking
         if torch.cuda.is_available() or torch.mps.is_available():
@@ -387,55 +391,51 @@ class Debug:
                 # Object was deleted or doesn't have expected attributes
                 pass
         
-        stats['summary'] = f" --- [Tensors] {stats['gpu_count']} GPU / {stats['cpu_count']} CPU / {stats['total_count']} total"
+        stats['summary'] = f"  [Tensors] {stats['gpu_count']} GPU / {stats['cpu_count']} CPU / {stats['total_count']} total"
         
         return stats
     
     def _log_detailed_tensor_analysis(self, details: Dict[str, Any]) -> None:
         """Log detailed tensor analysis when requested."""
-        self.log("─" * 60, category="memory")
-        self.log("DETAILED MEMORY ANALYSIS", category="memory")
-        self.log("─" * 60, category="memory")
         
         # GPU tensors
         if details['gpu_tensors']:
             gpu_total_gb = sum(t['size_mb'] for t in details['gpu_tensors']) / 1024
-            self.log(f"GPU TENSORS: {len(details['gpu_tensors'])} using {gpu_total_gb:.2f}GB", category="memory")
+            self.log(f"  GPU tensors: {len(details['gpu_tensors'])} using {gpu_total_gb:.2f}GB", category="memory")
             
             # Show top 5 largest
             largest = sorted(details['gpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:5]
             for t in largest:
-                self.log(f"  {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
         
         # Large CPU tensors
         if details['large_cpu_tensors']:
             cpu_large_gb = sum(t['size_mb'] for t in details['large_cpu_tensors']) / 1024
-            self.log(f"LARGE CPU TENSORS (>10MB): {len(details['large_cpu_tensors'])} using {cpu_large_gb:.2f}GB", category="memory")
+            self.log(f"  Large CPU tensors (>10MB):", category="memory")
+            self.log(f"    {len(details['large_cpu_tensors'])} using {cpu_large_gb:.2f}GB", category="memory")
             
             # Show top 3 largest
             largest = sorted(details['large_cpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:3]
             for t in largest:
-                self.log(f"  {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
         
         # Common shape patterns
         if details['shape_patterns']:
             common_shapes = sorted(details['shape_patterns'].items(), 
                                   key=lambda x: x[1], reverse=True)[:5]
             if len(common_shapes) > 0:
-                self.log("COMMON TENSOR SHAPES:", category="memory")
+                self.log("  Common tensor shapes:", category="memory")
                 for shape, count in common_shapes:
                     if count > 1:
-                        self.log(f"  {shape}: {count} instances", category="memory")
+                        self.log(f"    {shape}: {count} instances", category="memory")
         
         # Module instances
         if details['module_types']:
             multi_instance = [(k, v) for k, v in details['module_types'].items() if v > 1]
             if multi_instance:
-                self.log("MULTIPLE MODULE INSTANCES:", category="memory")
+                self.log("  Multiple module instances:", category="memory")
                 for mtype, count in sorted(multi_instance, key=lambda x: x[1], reverse=True)[:5]:
-                    self.log(f"  {mtype}: {count} instances", category="memory")
-        
-        self.log("─" * 60, category="memory")
+                    self.log(f"    {mtype}: {count} instances", category="memory")
     
     def _log_memory_diff(self, current_metrics: Dict[str, Any]) -> None:
         """Log memory changes from last checkpoint."""
@@ -492,7 +492,7 @@ class Debug:
             if component_type == "block":
                 message = f"Block {component_id} swap: {duration*1000:.1f}ms"
             else:
-                message = f"{component_type.capitalize()} {component_id} swap: {duration*1000:.1f}ms"
+                message = f"{component_type} {component_id} swap: {duration*1000:.1f}ms"
             
             self.log(message, category="blockswap")
     

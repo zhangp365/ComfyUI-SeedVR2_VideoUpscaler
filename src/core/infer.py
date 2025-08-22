@@ -12,7 +12,6 @@
 # // See the License for the specific language governing permissions and
 # // limitations under the License.
 
-import time
 from typing import List, Optional, Tuple, Union
 import torch
 from einops import rearrange
@@ -146,7 +145,7 @@ class VideoDiffusionInfer():
 
             use_tiling = (hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled)
             if use_tiling:
-                self.debug.log(f"Using VAE Tiled Encoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
+                self.debug.log(f"Using VAE tiled encoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
 
             # VAE process by each group.
             for sample in batches:
@@ -175,6 +174,8 @@ class VideoDiffusionInfer():
                 latents = na.unpack(latents, indices)
             else:
                 latents = [latent.squeeze(0) for latent in latents]
+            
+            self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
 
         return latents
     
@@ -202,9 +203,9 @@ class VideoDiffusionInfer():
 
             use_tiling = (hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled)
             if use_tiling:
-                self.debug.log(f"Using VAE Tiled Decoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
+                self.debug.log(f"Using VAE tiled decoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
 
-            self.debug.log(f"Latents batch shape: {latents[0].shape}", category="info")
+            self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
 
             for i, latent in enumerate(latents):
                 effective_dtype = target_dtype if target_dtype is not None else dtype
@@ -292,9 +293,6 @@ class VideoDiffusionInfer():
         # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
         # - BFloat16 models: Already optimal
         target_dtype = torch.bfloat16
-
-        model_dtype = next(self.dit.parameters()).dtype
-        self.debug.log(f"Model dtype: {model_dtype}, using {target_dtype} for autocast", category="precision")
         
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
@@ -336,7 +334,7 @@ class VideoDiffusionInfer():
         if preserve_vram:
             # Before sampling, check if BlockSwap is active
             if not use_blockswap and not hasattr(self, "_blockswap_active"):
-                self.debug.log("Moving DiT to GPU (inference requirement)", category="memory")
+                self.debug.log("Moving DiT to GPU (inference requirement)", category="general")
                 self.debug.start_timer("dit_to_gpu")
                 self.dit = self.dit.to(get_device())
                 self.debug.end_timer("dit_to_gpu", "DiT to GPU")
@@ -374,7 +372,7 @@ class VideoDiffusionInfer():
                 ),
             )
         
-        self.debug.end_timer("dit_inference", "DiT inference completed")
+        self.debug.end_timer("dit_inference", "DiT inference")
         self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
 
         latents = na.unflatten(latents, latents_shapes)
@@ -384,7 +382,7 @@ class VideoDiffusionInfer():
         decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
         
         if preserve_vram and not hasattr(self, "_blockswap_active"):
-            self.debug.log("Moving DiT back to CPU (preserve_vram mode)", category="memory")
+            self.debug.log("Moving DiT back to CPU (preserve_vram mode)", category="general")
             self.debug.start_timer("dit_to_cpu")
             self.dit = self.dit.to("cpu")
             latents_cond = latents_cond.to("cpu")
@@ -396,10 +394,10 @@ class VideoDiffusionInfer():
         # Move VAE to GPU if needed for decoding
         manage_vae_device(self, str(get_device()), preserve_vram=False, debug=self.debug)
         self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
-        self.debug.log("Decoding latents to video...", category="vae")
+        self.debug.log("Decoding latents to samples...", category="vae")
         self.debug.start_timer("vae_decode")
         samples = self.vae_decode(latents, target_dtype=decode_dtype, preserve_vram=preserve_vram)
-        self.debug.end_timer("vae_decode", "VAE decode completed")
+        self.debug.end_timer("vae_decode", "VAE decode")
         self.debug.log(f"Samples shape: {samples[0].shape}", category="vae")
         
         # Move VAE back to CPU after decoding if preserve_vram is enabled

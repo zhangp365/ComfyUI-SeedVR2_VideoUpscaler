@@ -119,11 +119,6 @@ class InflatedCausalConv3d(Conv3d):
         x = list(x.split(split_sizes, dim=split_dim))
         if prev_cache is not None:
             prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
-        # Memory cleanup when preserve_vram is true
-        '''if preserve_vram:
-            # Use debug if passed through the module
-            debug = getattr(self, 'debug', None)
-            clear_memory(debug=debug, full=False, force=True)'''
         # Loop Fwd.
         cache = None
         for idx in range(len(x)):
@@ -173,7 +168,7 @@ class InflatedCausalConv3d(Conv3d):
         except Exception as e:
             debug = getattr(self, 'debug', None)
             if debug:
-                debug.log("OOM recovery: Concatenating conv splits", category="warning", force=True)
+                debug.log(f"OOM - Clearing memory and retrying: Concatenating conv splits: {e}", level="WARNING", category="memory", force=True)
             clear_memory(debug=debug, full=True, force=True)
             time.sleep(1)
             output = torch.cat(x, split_dim)
@@ -358,7 +353,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     except Exception as e:
                         debug = getattr(norm_layer, 'debug', None)
                         if debug:
-                            debug.log("OOM recovery: Group Norm chunk", category="warning", force=True)
+                            debug.log(f"OOM - Clearing memory and retrying: Group Norm chunk: {e}", level="WARNING", category="memory", force=True)
                         clear_memory(debug=debug, full=True, force=True)
                         time.sleep(1)
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
@@ -369,7 +364,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                 except Exception as e:
                     debug = getattr(norm_layer, 'debug', None)
                     if debug:
-                        debug.log("OOM recovery: Concatenating norm chunks", category="warning", force=True)
+                        debug.log(f"OOM - Clearing memory and retrying: Concatenating norm chunks: {e}", level="WARNING", category="memory", force=True)
                     clear_memory(debug=debug, full=True, force=True)
                     time.sleep(1)
                     x = torch.cat(x, dim=1)

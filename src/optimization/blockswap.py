@@ -16,8 +16,6 @@ import time
 import types
 import torch
 import weakref
-import gc
-import psutil
 
 from typing import Dict, Any, List, Tuple, Optional, Union
 from src.optimization.memory_manager import clear_memory
@@ -92,10 +90,11 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
     if block_swap_config.get("offload_io_components", False):
         configs.append("I/O components")
     debug.log(f"BlockSwap configured: {', '.join(configs)}", category="blockswap", force=True)
+    debug.log("BlockSwap will swap blocks to GPU during inference", category="info", force=True)
         
     # Validate model structure
     if not hasattr(model, "blocks"):
-        debug.log("Model doesn't have 'blocks' attribute for BlockSwap", level="WARNING", category="blockswap")
+        debug.log("Model doesn't have 'blocks' attribute for BlockSwap", level="ERROR", category="blockswap")
         return
 
     total_blocks = len(model.blocks)
@@ -209,12 +208,6 @@ def _configure_blocks(model, device: str, offload_device: str,
         for name, buffer in block.named_buffers():
             if buffer.device != torch.device(target_device):
                 buffer.data = buffer.data.to(target_device, non_blocking=False)
-
-    # Only force clear memory if we actually moved blocks
-    if model.blocks_to_swap > 0:
-        clear_memory(debug=debug, full=True, force=True)
-    else:
-        clear_memory(debug=debug, full=True, force=False)
 
     return {
         "offload_memory": total_offload_memory,
@@ -367,7 +360,7 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
             debug.log_swap_time(
                 component_id=self._module_name,
                 duration=time.time() - t_start,
-                component_type="io"
+                component_type="I/O"
             )
 
         # Only clear cache under memory pressure
@@ -414,7 +407,7 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                         error_msg = str(e).lower()
                         # Only handle device/memory specific errors
                         if any(x in error_msg for x in ["device", "memory", "allocation"]):
-                            debug.log(f"RoPE device issue for {module_name}: {e}", level="WARNING", category="blockswap")
+                            debug.log(f"RoPE device issue for {module_name}: {e}", level="WARNING", category="blockswap", force=True)
                             
                             # Get current device from parameters
                             current_device = next(self.parameters()).device if list(self.parameters()) else get_device()
@@ -526,7 +519,7 @@ def cleanup_blockswap(runner, keep_state_for_cache: bool = False) -> None:
     # Early return if BlockSwap not active
     if not hasattr(runner, "_blockswap_active") or not runner._blockswap_active:
         if debug:
-            debug.log("BlockSwap not active, skipping cleanup", level="WARNING", category="blockswap")
+            debug.log("BlockSwap not active, skipping cleanup", level="WARNING", category="blockswap", force=True)
         return
 
     debug.log("Starting BlockSwap cleanup", category="cleanup")
