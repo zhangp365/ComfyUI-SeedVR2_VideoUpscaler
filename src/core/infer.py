@@ -212,7 +212,7 @@ class VideoDiffusionInfer():
 
             for i, latent in enumerate(latents):
                 effective_dtype = target_dtype if target_dtype is not None else dtype
-                latent = latent.to(device, effective_dtype, non_blocking=True)
+                latent = latent.to(device, effective_dtype, non_blocking=False)
                 latent = latent / scale + shift
                 latent = rearrange(latent, "b ... c -> b c ...")
                 latent = latent.squeeze(2)

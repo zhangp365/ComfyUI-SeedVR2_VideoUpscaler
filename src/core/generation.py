@@ -134,7 +134,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
             if not runner.sampling_timesteps.timesteps.is_cuda:
                 debug.log("Restoring timesteps tensor to GPU (preserve_vram)", category="general")
                 debug.start_timer("timesteps_to_gpu")
-                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.to(device, non_blocking=True)
+                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.to(device, non_blocking=False)
                 debug.end_timer("timesteps_to_gpu", "Sampling timesteps restored to GPU")
         
         with torch.autocast(str(get_device()), autocast_dtype, enabled=True):

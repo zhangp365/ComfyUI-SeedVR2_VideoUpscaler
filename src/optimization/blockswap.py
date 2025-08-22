@@ -53,7 +53,6 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
         block_swap_config: Configuration dictionary with keys:
             - blocks_to_swap: Number of blocks to swap (from the start)
             - offload_io_components: Whether to offload I/O components
-            - use_non_blocking: Whether to use non-blocking transfers
             - enable_debug: Whether to enable debug logging
     """
     if not block_swap_config:
@@ -79,14 +78,11 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
     # Determine devices
     device = str(get_device()) if (torch.cuda.is_available() or torch.mps.is_available()) else "cpu"
     offload_device = "cpu"
-    use_non_blocking = block_swap_config.get("use_non_blocking", True)
 
     configs = []
     blocks_to_swap = block_swap_config.get("blocks_to_swap", 0)
     if blocks_to_swap > 0:
         configs.append(f"{blocks_to_swap} blocks")
-    if block_swap_config.get("use_non_blocking", False):
-        configs.append("non-blocking")
     if block_swap_config.get("offload_io_components", False):
         configs.append("I/O components")
     debug.log(f"BlockSwap configured: {', '.join(configs)}", category="blockswap", force=True)
@@ -105,22 +101,21 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
     model.blocks_to_swap = blocks_to_swap - 1  # Convert to 0-indexed
     model.main_device = device
     model.offload_device = offload_device
-    model.use_non_blocking = use_non_blocking
 
     debug.log(f"Configuring: {blocks_to_swap}/{total_blocks} blocks for swapping", category="blockswap")
     
     # Configure I/O components
     offload_io_components = block_swap_config.get("offload_io_components", False)
-    io_components_offloaded = _configure_io_components(model, device, offload_device, use_non_blocking, 
+    io_components_offloaded = _configure_io_components(model, device, offload_device, 
                                                        offload_io_components, debug)
 
     # Configure block placement and memory tracking
-    memory_stats = _configure_blocks(model, device, offload_device, use_non_blocking, debug)
+    memory_stats = _configure_blocks(model, device, offload_device, debug)
     memory_stats['io_components'] = io_components_offloaded
 
      # Log memory summary
     _log_memory_summary(memory_stats, offload_device, device, offload_io_components, 
-                       use_non_blocking, debug)
+                       debug)
     
     # Wrap block forward methods for dynamic swapping
     for b, block in enumerate(model.blocks):
@@ -138,7 +133,6 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
         "blocks_swapped": blocks_to_swap,
         "offload_io_components": offload_io_components,
         "total_blocks": total_blocks,
-        "use_non_blocking": use_non_blocking,
         "offload_device": offload_device,
         "main_device": device,
         "enable_debug": block_swap_config.get("enable_debug", False),
@@ -155,8 +149,7 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
     
 
 def _configure_io_components(model, device: str, offload_device: str, 
-                            use_non_blocking: bool, offload_io_components: bool,
-                            debug) -> List[str]:
+                            offload_io_components: bool, debug) -> List[str]:
     """Configure I/O component placement and wrapping."""
     io_components_offloaded = []
     
@@ -164,7 +157,6 @@ def _configure_io_components(model, device: str, offload_device: str,
     for name, param in model.named_parameters():
         if "block" not in name:
             target_device = offload_device if offload_io_components else device
-            # Never use non_blocking for initial setup to avoid pinned memory
             param.data = param.data.to(target_device, non_blocking=False)
             status = "(offloaded)" if offload_io_components else ""
             debug.log(f"  {name} → {target_device} {status}", category="blockswap")
@@ -185,13 +177,12 @@ def _configure_io_components(model, device: str, offload_device: str,
 
 
 def _configure_blocks(model, device: str, offload_device: str, 
-                     use_non_blocking: bool, debug) -> Dict[str, float]:
+                     debug) -> Dict[str, float]:
     """Configure block placement and calculate memory statistics."""
     total_offload_memory = 0.0
     total_main_memory = 0.0
 
     # Move blocks based on swap configuration
-    # NEVER use non_blocking for initial CPU offload to avoid pinned memory
     for b, block in enumerate(model.blocks):
         block_memory = get_module_memory_mb(block)
 
@@ -218,7 +209,7 @@ def _configure_blocks(model, device: str, offload_device: str,
 
 def _log_memory_summary(memory_stats: Dict[str, float], offload_device: str, 
                        device: str, offload_io_components: bool,
-                       use_non_blocking: bool, debug) -> None:
+                       debug) -> None:
     """Log memory usage summary."""
     debug.log("BlockSwap memory configuration:", category="blockswap")
     if memory_stats['main_memory'] == 0:
@@ -233,8 +224,6 @@ def _log_memory_summary(memory_stats: Dict[str, float], offload_device: str,
     
     if offload_io_components and memory_stats.get('io_components'):
         debug.log(f"  I/O components offloaded: {', '.join(memory_stats['io_components'])}", category="blockswap")
-    
-    debug.log(f"  Non-blocking GPU transfers: {'Enabled' if use_non_blocking else 'Disabled'}", category="blockswap")
 
 
 
@@ -272,18 +261,13 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
             target_device = torch.device(model.main_device)
             
             if current_device != target_device:
-                # CPU->GPU: never use non_blocking (prevents pinned memory allocation)
                 self.to(model.main_device, non_blocking=False)
 
             # Execute forward pass with OOM protection
             output = original_forward(*args, **kwargs)
 
             # Move back to offload device
-            # Only use non_blocking for GPU->GPU transfers (following WanVideo pattern)
-            if model.use_non_blocking and model.offload_device != "cpu":
-                self.to(model.offload_device, non_blocking=True)
-            else:
-                self.to(model.offload_device, non_blocking=False)
+            self.to(model.offload_device, non_blocking=False)
             
             # Log timing if debug is available
             if debug and t_start is not None:
@@ -342,18 +326,13 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
         
         # Move to GPU for computation if needed
         if current_device != target_device:
-            # CPU->GPU: never use non_blocking
             self.to(model.main_device, non_blocking=False)
 
         # Execute forward pass
         output = self._original_forward(*args, **kwargs)
 
         # Move back to offload device
-        # Only use non_blocking for GPU->GPU transfers
-        if model.use_non_blocking and model.offload_device != "cpu":
-            self.to(model.offload_device, non_blocking=True)
-        else:
-            self.to(model.offload_device, non_blocking=False)
+        self.to(model.offload_device, non_blocking=False)
         
         # Log timing if debug is available
         if debug and t_start is not None:
@@ -535,7 +514,6 @@ def cleanup_blockswap(runner, keep_state_for_cache: bool = False) -> None:
         cached_config = {
             "blocks_to_swap": runner._block_swap_config.get("blocks_swapped"),
             "offload_io_components": runner._block_swap_config.get("offload_io_components"),
-            "use_non_blocking": runner._block_swap_config.get("use_non_blocking"),
             "offload_device": runner._block_swap_config.get("offload_device"),
             "main_device": runner._block_swap_config.get("main_device"),
             "enable_debug": runner._block_swap_config.get("enable_debug", False),
@@ -635,7 +613,7 @@ def cleanup_blockswap(runner, keep_state_for_cache: bool = False) -> None:
         delattr(model, '_blockswap_runner_ref')
 
     # Clean up BlockSwap attributes from model
-    attrs_to_remove = ["blocks_to_swap", "main_device", "offload_device", "use_non_blocking"]
+    attrs_to_remove = ["blocks_to_swap", "main_device", "offload_device"]
     for attr in attrs_to_remove:
         if hasattr(model, attr):
             delattr(model, attr)

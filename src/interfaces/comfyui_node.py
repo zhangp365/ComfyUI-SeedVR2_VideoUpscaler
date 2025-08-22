@@ -435,13 +435,6 @@ class SeedVR2BlockSwap:
                         "tooltip": "Number of transformer blocks to swap to CPU. Start with 16 and increase until OOM errors stop. 0=disabled",
                     },
                 ),
-                "use_non_blocking": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Use non-blocking GPU transfers for better performance.\nA large amount of RAM will be retained, and you won't\nbe able to reclaim it until ComfyUI is terminated.\n(always disabled on macOS to prevent Nan tensors)",
-                    },
-                ),
                 "offload_io_components": (
                     "BOOLEAN",
                     {
@@ -465,27 +458,23 @@ Configuration Guidelines:
     - blocks_to_swap=32-36: Maximum savings (slowest, lowest VRAM)
 
 Advanced Options:
-    - use_non_blocking: Enables asynchronous GPU transfers for better performance, but it will retain a lot of RAM and cannot be reclaimed
     - offload_io_components: Moves embeddings and I/O layers to CPU for additional VRAM savings (slower)
 
 Performance Tips:
     - Start with blocks_to_swap=16 and increase until you no longer get OOM errors or decrease if you have spare VRAM
     - Enable offload_io_components if you still need additional VRAM savings
     - Note: Even if inference succeeds, you may still OOM during VAE decoding - combine BlockSwap with VAE tiling if needed (feature in development)
-    - Set Keep non_blocking=False for maximum RAM savings (default) or non_blocking=True for better performance
     - Combine with smaller batch_size for maximum VRAM savings
 
 The actual memory savings depend on your specific model architecture and will be shown in the debug output when enabled.
     """
 
-    def create_config(self, blocks_to_swap, use_non_blocking, offload_io_components):
+    def create_config(self, blocks_to_swap, offload_io_components):
         """Create BlockSwap configuration"""
         if blocks_to_swap == 0:
             return (None,)
-        _use_non_blocking = False if torch.mps.is_available() else use_non_blocking
         config = {
             "blocks_to_swap": blocks_to_swap,
-            "use_non_blocking": _use_non_blocking,
             "offload_io_components": offload_io_components,
         }
         
