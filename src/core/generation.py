@@ -26,7 +26,7 @@ from src.common.distributed import get_device
 
 
 # Import required modules
-from src.optimization.memory_manager import reset_vram_peak, clear_all_caches
+from src.optimization.memory_manager import manage_vae_device, clear_all_caches, clear_memory
 from src.optimization.performance import (
     optimized_video_rearrange, optimized_single_video_rearrange, 
     optimized_sample_to_image_format, temporal_latent_blending
@@ -114,6 +114,10 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     cond_noise_scale = 0.0
 
     def _add_noise(x, aug_noise):
+        # Early return if no noise is being added
+        if cond_noise_scale == 0.0:
+            return x
+            
         # Use adaptive optimal dtype
         t = (
             torch.tensor([1000.0], device=device, dtype=dtype)
@@ -122,6 +126,10 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
         shape = torch.tensor(x.shape[1:], device=device)[None]
         t = runner.timestep_transform(t, shape)
         x = runner.schedule.forward(x, aug_noise, t)
+        
+        # Explicit cleanup of intermediate tensors
+        del t, shape
+        
         return x
 
     # Generate conditions with memory optimization
@@ -137,16 +145,32 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Use adaptive autocast for optimal performance
     with torch.no_grad():
+        # Restore timesteps to GPU if they were offloaded
+        if preserve_vram and hasattr(runner, 'sampling_timesteps') and hasattr(runner.sampling_timesteps, 'timesteps'):
+            if not runner.sampling_timesteps.timesteps.is_cuda:
+                debug.log("Restoring timesteps tensor to GPU (preserve_vram)", category="memory")
+                debug.start_timer("timesteps_to_gpu")
+                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.to(device, non_blocking=True)
+                debug.end_timer("timesteps_to_gpu", "Sampling timesteps restored to GPU")
+        
         with torch.autocast(str(get_device()), autocast_dtype, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
                 conditions=conditions,
-                preserve_vram=preserve_vram  # Memory offload optimization
-                and not use_blockswap,  # Disable dit_offload if BlockSwap active
+                preserve_vram=preserve_vram,  # Memory offload optimization
                 temporal_overlap=temporal_overlap,
                 use_blockswap=use_blockswap,
                 **text_embeds_dict,
             )
+    
+    # Clean up diffusion timesteps from GPU if preserve_vram is enabled
+    if preserve_vram:
+        if hasattr(runner, 'sampling_timesteps') and hasattr(runner.sampling_timesteps, 'timesteps'):
+            if runner.sampling_timesteps.timesteps.is_cuda:
+                debug.log("Moving timesteps tensor to CPU (preserve_vram)", category="memory")
+                debug.start_timer("timesteps_to_cpu")
+                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.cpu()
+                debug.end_timer("timesteps_to_cpu", "Sampling timesteps offloaded to CPU")
     
     # Process samples with advanced optimization
     samples = optimized_video_rearrange(video_tensors)
@@ -283,8 +307,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
 
     # Set random seed
     set_seed(seed)
-    debug.log_memory_state("Model configuration - Memory")
     debug.end_timer("model_config", "Model configuration completed", show_breakdown=True)
+    debug.log_memory_state("After model configuration", detailed_tensors=False)
 
     # ───────────────────────────────────────────────────────────────
     # Step 2: Input Preparation & Transformation Setup
@@ -315,8 +339,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(device, dtype=compute_dtype)
     text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
     
-    debug.log_memory_state("Input preparation - Memory ")
     debug.end_timer("input_prep", "Input preparation completed", show_breakdown=True)
+    debug.log_memory_state("After input preparation", detailed_tensors=False)
     
     # ───────────────────────────────────────────────────────────────
     # Step 3: Batch Processing
@@ -325,8 +349,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     debug.start_timer("batch_processing")
     
     # Standard processing (non-TileVAE) continues below
-    # Memory optimization
-    reset_vram_peak(debug)
     
     # Calculate processing parameters
     step = batch_size - temporal_overlap
@@ -364,103 +386,124 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                     break  # Not enough new frames, stop
             
             batch_number = (batch_idx // step + 1) if step > 0 else 1
-            debug.start_timer(f"batch_{batch_number}")
             current_frames = end_idx - start_idx
             debug.log("", category="none") 
             debug.log(f"━━━ Batch {batch_number}/{total_batches}: frames {start_idx}-{end_idx-1} ━━━", category="generation", force=True)
-            
+            debug.log_memory_state(f"Before batch {batch_number} processing", detailed_tensors=False)
 
+            # Use timer context for this batch - all timers within will be namespaced
+            with debug.timer_context(f"batch_{batch_number}"):
+                debug.start_timer("batch")  # This becomes "batch_1_batch" internally
             
-            # Process current batch
-            video = images[start_idx:end_idx]
-            debug.log(f"Video compute dtype: {compute_dtype}", category="generation")
-            # Use adaptive computation dtype 
-            video = video.permute(0, 3, 1, 2).to(device, dtype=compute_dtype)
-            
-            # Apply video transformations with memory optimization
-            transformed_video = video_transform(video)
-            del video
-            #video = video.to("cpu")
-            #del video
-            ori_lengths = [transformed_video.size(1)]
-            
-            # Handle correct format: frames % 4 == 1
-            t = transformed_video.size(1)
-            debug.log(f"Sequence of {t} frames", category="video", force=True)
-            
-            
-            if len(images) >= 5 and t % 4 != 1:
-                debug.log(f"Transformed video shape before cut: {transformed_video.shape}", category="video")
-                transformed_video = cut_videos(transformed_video)
-                debug.log(f"Transformed video shape: {transformed_video.shape}", category="video")
-            
-            # Context-aware temporal strategy
-            # First batch: standard complete diffusion
-            debug.start_timer("vae_to_gpu")
-            runner.vae = runner.vae.to(device)
-            debug.end_timer("vae_to_gpu", "VAE to GPU")
-            debug.start_timer("vae_encode")
-            debug.log(f"VAE encoding precision: {autocast_dtype}", category="vae")
-            with torch.autocast(str(device), autocast_dtype, enabled=True):
-                cond_latents = runner.vae_encode([transformed_video])
-            debug.end_timer("vae_encode", "VAE encoding")
-            #tps = time.time()
-            #transformed_video = transformed_video.to("cpu")
-            #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
-            debug.log(f"Cond latents shape: {cond_latents[0].shape}", category="info")
-            
-            # Normal generation
-            samples = generation_step(runner, text_embeds, preserve_vram, cond_latents=cond_latents, temporal_overlap=temporal_overlap, debug=debug)
-            #del cond_latents
-            del cond_latents
-               
-            
-            # Post-process samples
-            sample = samples[0]
-            del samples 
-            #del samples
-            if ori_lengths[0] < sample.shape[0]:
-                sample = sample[:ori_lengths[0]]
-            #if temporal_overlap > 0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
-            #    sample = sample[temporal_overlap:]  # Remove overlap frames from output
-            
-            # Apply color correction if available
-            debug.start_timer("video_to_device")
-            transformed_video = transformed_video.to(device)
-            debug.end_timer("video_to_device", "Transformed video to device")
-            
-            input_video = [optimized_single_video_rearrange(transformed_video)]
-            del transformed_video
-            #transformed_video = transformed_video.to("cpu")
-            #del transformed_video
-            sample = wavelet_reconstruction(sample, input_video[0][:sample.size(0)], debug)
-            del input_video
+                # Move text embeddings back to GPU if they were offloaded
+                if preserve_vram or (block_swap_config and block_swap_config.get("offload_io_components", False)):
+                    if text_pos_embeds.device.type == "cpu":
+                        reason = "preserve_vram" if preserve_vram else "BlockSwap I/O offload"
+                        debug.log(f"Restoring text embeddings to GPU ({reason} active)", category="memory")
+                        debug.start_timer("text_embeddings_to_gpu")
+                        text_pos_embeds = text_pos_embeds.to(device, dtype=compute_dtype)
+                        text_neg_embeds = text_neg_embeds.to(device, dtype=compute_dtype)
+                        text_embeds["texts_pos"][0] = text_pos_embeds
+                        text_embeds["texts_neg"][0] = text_neg_embeds
+                        debug.end_timer("text_embeddings_to_gpu", "Text embeddings restored to GPU")
+                
+                # Process current batch
+                video = images[start_idx:end_idx]
+                debug.log(f"Video compute dtype: {compute_dtype}", category="precision")
+                # Use adaptive computation dtype 
+                video = video.permute(0, 3, 1, 2).to(device, dtype=compute_dtype)
+                
+                # Apply video transformations with memory optimization
+                transformed_video = video_transform(video)
+                del video
+                #video = video.to("cpu")
+                #del video
+                ori_lengths = [transformed_video.size(1)]
+                
+                # Handle correct format: frames % 4 == 1
+                t = transformed_video.size(1)
+                debug.log(f"Sequence of {t} frames", category="video", force=True)
+                
+                
+                if len(images) >= 5 and t % 4 != 1:
+                    debug.log(f"Transformed video shape before cut: {transformed_video.shape}", category="video")
+                    transformed_video = cut_videos(transformed_video)
+                    debug.log(f"Transformed video shape: {transformed_video.shape}", category="video")
+                
+                # Context-aware temporal strategy
+                # First batch: standard complete diffusion
 
-            # Convert to final image format
-            sample = optimized_sample_to_image_format(sample)
-            sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
-            sample_cpu = sample.to(torch.float16).to("cpu")
-            del sample
-            batch_samples.append(sample_cpu)
-            #del sample 
-            
-            # Aggressive cleanup after each batch
-            # tps = time.time()
-            # Progress callback - batch start
-            if progress_callback:
-                progress_callback(batch_count+1, total_batches, current_frames, "Processing batch...")
-            #transformed_video = transformed_video.to("cpu")
-            #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
-            # Clean VRAM after each batch when preserve_vram is active
-            if preserve_vram:
-                # Only offload the VAE when we are not keeping it resident
-                offload = not getattr(runner, 'keep_vae_in_vram', False)
-                clear_all_caches(runner, debug, offload_vae=offload)
-            #del transformed_video
-            #clear_vram_cache()
-            # Log memory state at the end of each batch
-            debug.log_memory_state(f"Batch {batch_number} - Memory")
-            debug.end_timer(f"batch_{batch_number}", f"Batch {batch_number} processed", show_breakdown=True)
+                # Move VAE to GPU if needed for encoding
+                manage_vae_device(runner, str(device), preserve_vram=False, debug=debug)
+                debug.log(f"VAE encoding precision: {autocast_dtype}", category="precision")
+                debug.log("Encoding video to latents...", category="vae")
+                debug.start_timer("vae_encoding")
+                with torch.autocast(str(device), autocast_dtype, enabled=True):
+                    cond_latents = runner.vae_encode([transformed_video])
+                debug.end_timer("vae_encoding", "VAE encoding")
+                debug.log(f"Cond latents shape: {cond_latents[0].shape}", category="info")
+                
+                # Move VAE back to CPU after encoding if preserve_vram is enabled
+                if preserve_vram:
+                    manage_vae_device(runner, 'cpu', preserve_vram=preserve_vram, debug=debug)
+                
+                debug.log_memory_state("After VAE encode", detailed_tensors=False)
+
+                # Normal generation
+                samples = generation_step(runner, text_embeds, preserve_vram, cond_latents=cond_latents, temporal_overlap=temporal_overlap, debug=debug)
+                #del cond_latents
+                del cond_latents
+                
+                # Post-process samples
+                sample = samples[0]
+                del samples 
+                #del samples
+                if ori_lengths[0] < sample.shape[0]:
+                    sample = sample[:ori_lengths[0]]
+                #if temporal_overlap > 0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
+                #    sample = sample[temporal_overlap:]  # Remove overlap frames from output
+                
+                # Apply color correction if available
+                debug.start_timer("video_to_device")
+                transformed_video = transformed_video.to(device)
+                debug.end_timer("video_to_device", "Transformed video to device")
+                
+                input_video = [optimized_single_video_rearrange(transformed_video)]
+                del transformed_video
+                #transformed_video = transformed_video.to("cpu")
+                #del transformed_video
+                sample = wavelet_reconstruction(sample, input_video[0][:sample.size(0)], debug)
+                del input_video
+
+                # Convert to final image format
+                sample = optimized_sample_to_image_format(sample)
+                sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
+                sample_cpu = sample.to(torch.float16).to("cpu")
+                del sample
+                batch_samples.append(sample_cpu)
+                
+                # Aggressive cleanup after each batch
+                # tps = time.time()
+                # Progress callback - batch start
+                if progress_callback:
+                    progress_callback(batch_count+1, total_batches, current_frames, "Processing batch...")
+                #transformed_video = transformed_video.to("cpu")
+                #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
+                # Clean VRAM after each batch when preserve_vram is active
+                if preserve_vram or (block_swap_config and block_swap_config.get("offload_io_components", False)):
+                    # Move text embeddings to CPU when using memory-saving features
+                    reason = "preserve_vram" if preserve_vram else "BlockSwap I/O offload"
+                    debug.log(f"Moving text embeddings to CPU ({reason})", category="memory")
+                    debug.start_timer("text_embeddings_to_cpu")
+                    text_pos_embeds = text_pos_embeds.to("cpu")
+                    text_neg_embeds = text_neg_embeds.to("cpu")
+                    text_embeds["texts_pos"][0] = text_pos_embeds
+                    text_embeds["texts_neg"][0] = text_neg_embeds
+                    debug.end_timer("text_embeddings_to_cpu", "Text embeddings moved to CPU")
+                    
+                # Log memory state at the end of each batch
+                debug.end_timer("batch", f"Batch {batch_number} processed", show_breakdown=True)
+                debug.log_memory_state(f"After batch {batch_number} processing", detailed_tensors=True)
 
     finally:
         debug.log("", category="none")
@@ -468,22 +511,24 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         debug.start_timer("generation_cleanup")
 
         # Final cleanup of embeddings
+        debug.log("Moving text embeddings to CPU (final cleanup)", category="memory")
         text_pos_embeds = text_pos_embeds.to("cpu")
         text_neg_embeds = text_neg_embeds.to("cpu")
+        
+        # Move DiT to CPU
+        debug.log("Moving DiT to CPU (final cleanup)", category="memory")
+        debug.start_timer("dit_to_cpu_cleanup")
         runner.dit.to("cpu")
-        if not getattr(runner, 'keep_vae_in_vram', False):
-            runner.vae.to("cpu")
-        if torch.mps.is_available():
-            torch.mps.empty_cache()
-        else:
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-        #del text_pos_embeds, text_neg_embeds
-        #clear_vram_cache()
+        debug.end_timer("dit_to_cpu_cleanup", "DiT moved to CPU (final cleanup)")
+        
+        # Move VAE to CPU
+        manage_vae_device(runner, 'cpu', preserve_vram=False, debug=debug, reason="final cleanup")
+        
+        clear_memory(debug=debug, full=True, force=True)
 
         # Log final memory state
-        debug.log_memory_state("Generation cleanup - Memory")
         debug.end_timer("generation_cleanup", "Batch generation cleanup")
+        debug.log_memory_state("After batch generation cleanup", detailed_tensors=False)
     
     debug.end_timer("batch_processing", "Batch processing completed", show_breakdown=True)
     
@@ -535,6 +580,15 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             
             # Clean up merged batch memory
             del batch_group, merged_result
+        
+        # Clean up batch_samples list completely
+        for batch in batch_samples:
+            if torch.is_tensor(batch):
+                if batch.is_cuda:
+                    batch.cpu()
+                del batch
+        batch_samples.clear()
+        del batch_samples
             
         debug.log(f"Memory pre-allocation completed for output tensor: {final_video_images.shape}", category="success")
         debug.log("Pre-allocation ensures contiguous memory for final video output", category="info")
@@ -565,11 +619,9 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                     debug.log(f"  Most swapped: Block {swap_summary['most_swapped_block']} "
                             f"({swap_summary['most_swapped_count']} times)", category="blockswap")
                     
-    debug.log_memory_state("Post-processing - Memory")
     debug.end_timer("post_processing", "Post-processing completed", show_breakdown=True)
+    debug.log_memory_state("After post-processing", detailed_tensors=False)
     
-    # Cleanup batch_samples
-    #del batch_samples
     return final_video_images
 
 

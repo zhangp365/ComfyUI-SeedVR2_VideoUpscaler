@@ -54,7 +54,7 @@ if MODULES_AVAILABLE['downloads']:
 if MODULES_AVAILABLE['memory_manager']:
     from src.optimization.memory_manager import (
         get_vram_usage,
-        clear_vram_cache,
+        clear_memory,
         reset_vram_peak,
         preinitialize_rope_cache,
     )
@@ -122,7 +122,7 @@ __all__ = [
     'download_weight', 
     
     # Memory Management
-    'get_vram_usage', 'clear_vram_cache', 'reset_vram_peak', 
+    'get_vram_usage', 'clear_memory', 'reset_vram_peak', 
     'preinitialize_rope_cache', 
     
     # Performance & Video Processing

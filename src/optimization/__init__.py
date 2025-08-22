@@ -5,8 +5,9 @@ Contains memory management, performance optimizations, and compatibility layers
 '''
 # Memory management functions
 from .memory_manager import (
+    get_basic_vram_info,
     get_vram_usage,
-    clear_vram_cache, 
+    clear_memory, 
     reset_vram_peak,
     preinitialize_rope_cache,
 )
@@ -27,7 +28,7 @@ from .compatibility import (
 __all__ = [
     # Memory management
     "get_vram_usage",
-    "clear_vram_cache",
+    "clear_memory",
     "reset_vram_peak",
     "preinitialize_rope_cache",
     

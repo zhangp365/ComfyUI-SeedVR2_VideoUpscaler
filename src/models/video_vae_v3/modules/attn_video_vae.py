@@ -52,6 +52,7 @@ from .types import (
     _memory_device_t,
     _receptive_field_t,
 )
+from src.optimization.memory_manager import clear_memory
 
 logger = get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -131,22 +132,32 @@ class Upsample3D(Upsample2D):
             )
         else:
             hidden_states = [hidden_states]
-        # ADD BY NUMZ
-        if preserve_vram:
-            if torch.mps.is_available():
-                torch.mps.empty_cache()
-            else:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+
         for i in range(len(hidden_states)):
-            hidden_states[i] = self.upscale_conv(hidden_states[i])
-            hidden_states[i] = rearrange(
-                hidden_states[i],
-                "b (x y z c) f h w -> b c (f z) (h x) (w y)",
-                x=self.spatial_ratio,
-                y=self.spatial_ratio,
-                z=self.temporal_ratio,
-            )
+            # OOM recovery attempt
+            try:
+                hidden_states[i] = self.upscale_conv(hidden_states[i])
+                hidden_states[i] = rearrange(
+                    hidden_states[i],
+                    "b (x y z c) f h w -> b c (f z) (h x) (w y)",
+                    x=self.spatial_ratio,
+                    y=self.spatial_ratio,
+                    z=self.temporal_ratio,
+                )
+            except Exception as e:
+                debug = getattr(self, 'debug', None)
+                if debug:
+                    debug.log("OOM recovery: Upsample3D upscale_conv", category="warning", force=True)
+                clear_memory(debug=debug, full=True, force=True)
+                time.sleep(1)
+                hidden_states[i] = self.upscale_conv(hidden_states[i])
+                hidden_states[i] = rearrange(
+                    hidden_states[i],
+                    "b (x y z c) f h w -> b c (f z) (h x) (w y)",
+                    x=self.spatial_ratio,
+                    y=self.spatial_ratio,
+                    z=self.temporal_ratio,
+                )
 
         # [Overridden] For causal temporal conv
         if self.temporal_up and memory_state != MemoryState.ACTIVE:
@@ -154,18 +165,24 @@ class Upsample3D(Upsample2D):
 
         if not self.slicing:
             hidden_states = hidden_states[0]
-        # ADD BY NUMZ
-        if preserve_vram:
-            if torch.mps.is_available():
-                torch.mps.empty_cache()
-            else:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+
         if self.use_conv:
-            if self.name == "conv":
-                hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
-            else:
-                hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
+            # OOM recovery attempt
+            try:
+                if self.name == "conv":
+                    hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
+                else:
+                    hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
+            except Exception as e:
+                debug = getattr(self, 'debug', None)
+                if debug:
+                    debug.log("OOM recovery: Upsample3D conv", category="warning", force=True)
+                clear_memory(debug=debug, full=True, force=True)
+                time.sleep(1)
+                if self.name == "conv":
+                    hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
+                else:
+                    hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
 
         if not self.slicing:
             return hidden_states
@@ -313,19 +330,16 @@ class ResnetBlock3D(ResnetBlock2D):
         hidden_states = input_tensor
 
         hidden_states = causal_norm_wrapper(self.norm1, hidden_states, preserve_vram=preserve_vram)
-        # ADD BY NUMZ
+        # OOM recovery attempt
         try:
             hidden_states = self.nonlinearity(hidden_states)
         except Exception as e:
-            if hasattr(self, 'debug') and self.debug:
-                self.debug.log("OOM second chance: ResnetBlock3D", category="warning", force=True)
-            if torch.mps.is_available():
-                torch.mps.empty_cache()
-            else:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-            time.sleep(1)
-            hidden_states = self.nonlinearity(hidden_states)
+            debug = getattr(self, 'debug', None)
+            if debug:
+                debug.log("OOM recovery: ResnetBlock3D", category="warning", force=True)
+            clear_memory(debug=debug, full=True, force=True)
+            time.sleep(1) 
+            hidden_states = self.nonlinearity(hidden_states) 
 
         if self.upsample is not None:
             # upsample_nearest_nhwc fails with large batch sizes.

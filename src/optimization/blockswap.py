@@ -20,7 +20,7 @@ import gc
 import psutil
 
 from typing import Dict, Any, List, Tuple, Optional, Union
-from src.optimization.memory_manager import get_vram_usage
+from src.optimization.memory_manager import clear_memory
 from src.optimization.compatibility import call_rope_with_stability
 from src.common.distributed import get_device
 
@@ -72,7 +72,6 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
             raise ValueError("Debug instance must be provided to apply_block_swap_to_dit")
     
     debug.start_timer("apply_blockswap")
-    debug.log_memory_state("Before BlockSwap")
 
     # Get the actual model (handle FP8CompatibleDiT wrapper)
     model = runner.dit
@@ -152,8 +151,8 @@ def apply_block_swap_to_dit(runner, block_swap_config: Dict[str, Any], debug) ->
     _protect_model_from_move(model, runner, debug)
 
     debug.log("BlockSwap configuration complete", category="success")
-    debug.log_memory_state("After BlockSwap")
     debug.end_timer("apply_blockswap", "BlockSwap configuration applied")
+    debug.log_memory_state("After BlockSwap", detailed_tensors=False)
     
 
 def _configure_io_components(model, device: str, offload_device: str, 
@@ -166,7 +165,8 @@ def _configure_io_components(model, device: str, offload_device: str,
     for name, param in model.named_parameters():
         if "block" not in name:
             target_device = offload_device if offload_io_components else device
-            param.data = param.data.to(target_device, non_blocking=use_non_blocking)
+            # Never use non_blocking for initial setup to avoid pinned memory
+            param.data = param.data.to(target_device, non_blocking=False)
             status = "(offloaded)" if offload_io_components else ""
             debug.log(f"  {name} → {target_device} {status}", category="blockswap")
 
@@ -192,6 +192,7 @@ def _configure_blocks(model, device: str, offload_device: str,
     total_main_memory = 0.0
 
     # Move blocks based on swap configuration
+    # NEVER use non_blocking for initial CPU offload to avoid pinned memory
     for b, block in enumerate(model.blocks):
         block_memory = get_module_memory_mb(block)
 
@@ -199,7 +200,7 @@ def _configure_blocks(model, device: str, offload_device: str,
             block.to(device)
             total_main_memory += block_memory
         else:
-            block.to(offload_device, non_blocking=use_non_blocking)
+            block.to(offload_device, non_blocking=False)
             total_offload_memory += block_memory
 
     # Ensure all buffers match their containing module's device
@@ -207,13 +208,13 @@ def _configure_blocks(model, device: str, offload_device: str,
         target_device = device if b > model.blocks_to_swap else offload_device
         for name, buffer in block.named_buffers():
             if buffer.device != torch.device(target_device):
-                buffer.data = buffer.data.to(target_device)
+                buffer.data = buffer.data.to(target_device, non_blocking=False)
 
-    # Clean up memory
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    gc.collect()
+    # Only force clear memory if we actually moved blocks
+    if model.blocks_to_swap > 0:
+        clear_memory(debug=debug, full=True, force=True)
+    else:
+        clear_memory(debug=debug, full=True, force=False)
 
     return {
         "offload_memory": total_offload_memory,
@@ -278,17 +279,18 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
             target_device = torch.device(model.main_device)
             
             if current_device != target_device:
-                self.to(model.main_device, non_blocking=model.use_non_blocking)
-                
-            # Synchronize if needed
-            if hasattr(model, 'use_non_blocking') and not model.use_non_blocking and torch.cuda.is_available():
-                torch.cuda.synchronize(get_device())
+                # CPU->GPU: never use non_blocking (prevents pinned memory allocation)
+                self.to(model.main_device, non_blocking=False)
 
             # Execute forward pass with OOM protection
             output = original_forward(*args, **kwargs)
 
             # Move back to offload device
-            self.to(model.offload_device, non_blocking=model.use_non_blocking)
+            # Only use non_blocking for GPU->GPU transfers (following WanVideo pattern)
+            if model.use_non_blocking and model.offload_device != "cpu":
+                self.to(model.offload_device, non_blocking=True)
+            else:
+                self.to(model.offload_device, non_blocking=False)
             
             # Log timing if debug is available
             if debug and t_start is not None:
@@ -299,13 +301,7 @@ def _wrap_block_forward(block: torch.nn.Module, block_idx: int, model: torch.nn.
                 )
 
             # Only clear cache under memory pressure
-            if torch.mps.is_available():
-                mem = psutil.virtual_memory()
-                if torch.mps.current_allocated_memory() > mem.total * 0.9:
-                    torch.mps.empty_cache()
-            if torch.cuda.is_available() and torch.cuda.memory_allocated() > torch.cuda.get_device_properties(0).total_memory * 0.9:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+            clear_memory(debug=debug, full=True, force=False)
         else:
             output = original_forward(*args, **kwargs)
 
@@ -353,20 +349,18 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
         
         # Move to GPU for computation if needed
         if current_device != target_device:
-            self.to(model.main_device)
-            
-        # Synchronize if not using non-blocking transfers
-        if hasattr(model, 'use_non_blocking') and not model.use_non_blocking:
-            if torch.mps.is_available():
-                torch.mps.synchronize()
-            else:
-                torch.cuda.synchronize(get_device())
+            # CPU->GPU: never use non_blocking
+            self.to(model.main_device, non_blocking=False)
 
         # Execute forward pass
         output = self._original_forward(*args, **kwargs)
 
         # Move back to offload device
-        self.to(model.offload_device, non_blocking=model.use_non_blocking)
+        # Only use non_blocking for GPU->GPU transfers
+        if model.use_non_blocking and model.offload_device != "cpu":
+            self.to(model.offload_device, non_blocking=True)
+        else:
+            self.to(model.offload_device, non_blocking=False)
         
         # Log timing if debug is available
         if debug and t_start is not None:
@@ -377,13 +371,7 @@ def _wrap_io_forward(module: torch.nn.Module, module_name: str, model: torch.nn.
             )
 
         # Only clear cache under memory pressure
-        if torch.mps.is_available():
-            mem = psutil.virtual_memory()
-            if torch.mps.current_allocated_memory() > mem.total * 0.9:
-                torch.mps.empty_cache()
-        if torch.cuda.is_available() and torch.cuda.memory_allocated(get_device()) > torch.cuda.get_device_properties(get_device()).total_memory * 0.9:
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+        clear_memory(debug=debug, full=True, force=False)
 
         return output
     
@@ -666,6 +654,16 @@ def cleanup_blockswap(runner, keep_state_for_cache: bool = False) -> None:
     # Move model to CPU to free VRAM
     if not keep_state_for_cache:
         model.to("cpu")
+        # Ensure all sub-modules are also on CPU
+        for module in model.modules():
+            if hasattr(module, '_parameters'):
+                for param in module._parameters.values():
+                    if param is not None and param.is_cuda:
+                        param.data = param.data.cpu()
+            if hasattr(module, '_buffers'):
+                for buffer in module._buffers.values():
+                    if buffer is not None and buffer.is_cuda:
+                        buffer.data = buffer.data.cpu()
         debug.log("Moved model to CPU", category="store")
 
     # Clean up runner attributes
@@ -684,15 +682,3 @@ def cleanup_blockswap(runner, keep_state_for_cache: bool = False) -> None:
 
     # Clear local debug reference
     debug = None
-
-    # Force garbage collection (multiple passes for thorough cleanup)
-    gc.collect(2)  # Full collection including oldest generation
-    gc.collect()
-    gc.collect()
-
-    # Final memory cleanup
-    if torch.mps.is_available():
-        torch.mps.empty_cache()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
