@@ -72,9 +72,9 @@ class EulerSampler(Sampler):
             
             # Nettoyer les tenseurs temporaires
             del pred
-            # Use debug if available from the sampler
-            debug = getattr(self, 'debug', None)
-            clear_memory(debug=debug, full=False, force=True)
+
+            # Clear memory - only when model is configured with sampling step > 1
+            clear_memory(debug=getattr(self, 'debug', None), full=False, force=True)
             
             i += 1
             progress.update()

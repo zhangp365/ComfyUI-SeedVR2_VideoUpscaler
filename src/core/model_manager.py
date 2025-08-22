@@ -278,6 +278,14 @@ def load_quantized_state_dict(checkpoint_path, device="cpu", keep_native_fp8=Tru
     return state
 
 
+def _propagate_debug_to_modules(module, debug):
+    """Propagate debug to specific modules that need it"""
+    for name, submodule in module.named_modules():
+        class_name = submodule.__class__.__name__
+        # Only target the specific modules that actually use debug
+        if class_name in ('ResnetBlock3D', 'Upsample3D', 'InflatedCausalConv3d', 'GroupNorm'):
+            submodule.debug = debug
+
 
 def configure_dit_model_inference(runner, device, checkpoint, config, 
                                  preserve_vram=False, model_weight=None, 
@@ -446,7 +454,8 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
         runner.vae.set_causal_slicing(**config.vae.slicing)
         debug.end_timer("vae_set_causal_slicing", "VAE causal slicing configuration")
 
-    # Attach debug to VAE
+    # Attach debug to VAE and propagate to required submodules
     runner.vae.debug = debug
+    _propagate_debug_to_modules(runner.vae, debug)
 
     return runner

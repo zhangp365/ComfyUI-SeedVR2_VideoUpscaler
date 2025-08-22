@@ -119,6 +119,9 @@ class VideoDiffusionInfer():
             schedule=self.schedule,
             timesteps=self.sampling_timesteps,
         )
+        # Propagate debug to sampler
+        if hasattr(self, 'debug'):
+            self.sampler.debug = self.debug
 
     # -------------------------------- Helper ------------------------------- #
 
