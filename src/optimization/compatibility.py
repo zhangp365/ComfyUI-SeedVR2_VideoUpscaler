@@ -172,7 +172,7 @@ class FP8CompatibleDiT(torch.nn.Module):
         if rope_count > 0:
             self.debug.log(f"Stabilized {rope_count} RoPE modules", category="success")
         
-        self.debug.end_timer("stabilize_rope", f"Stabilized {rope_count} RoPE modules")
+        self.debug.end_timer("stabilize_rope", f"Stabilizing RoPE modules")
 
     def _apply_flash_attention_optimization(self) -> None:
         """🚀 FLASH ATTENTION OPTIMIZATION - 30-50% speedup of attention layers"""

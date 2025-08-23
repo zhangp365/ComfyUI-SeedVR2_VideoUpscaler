@@ -28,7 +28,7 @@ except ImportError:
     print("⚠️ SafeTensors not available, recommended install: pip install safetensors")
     SAFETENSORS_AVAILABLE = False
 
-from src.optimization.memory_manager import get_basic_vram_info, clear_memory
+from src.optimization.memory_manager import get_basic_vram_info
 from src.optimization.compatibility import FP8CompatibleDiT
 from src.optimization.memory_manager import preinitialize_rope_cache, clear_rope_lru_caches
 from src.common.config import load_config, create_object
@@ -79,17 +79,6 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
         for key, value in runtime_params.items():
             setattr(cached_runner, key, value)
         
-        # Clear RoPE caches before reuse
-        if hasattr(cached_runner, 'dit'):
-            dit_model = cached_runner.dit
-            if hasattr(dit_model, 'dit_model'):
-                dit_model = dit_model.dit_model
-            clear_rope_lru_caches(dit_model)
-        
-        # Clear runner cache to prevent accumulation
-        if hasattr(cached_runner, 'cache') and hasattr(cached_runner.cache, 'cache'):
-            cached_runner.cache.cache.clear()
-        
         debug.log(f"Cache hit: Reusing runner for model {model}", category="reuse", force=True)
         
         # Check if blockswap needs to be applied
@@ -114,14 +103,11 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
                 debug.log("Applying BlockSwap to cached runner", category="blockswap", force=True)
                 apply_block_swap_to_dit(cached_runner, block_swap_config, debug)
                 cached_runner._cached_blockswap_config = block_swap_config.copy() if block_swap_config else None
-            
-            # Store debug instance on runner
-            cached_runner.debug = debug
-            return cached_runner
-        else:
-            # No BlockSwap needed
-            cached_runner.debug = debug
-            return cached_runner
+        
+        # Store debug instance on runner
+        cached_runner.debug = debug
+
+        return cached_runner
         
     else:
         debug.log(f"Cache miss: Creating new runner for model {model}", category="cache", force=True)
@@ -139,7 +125,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
         model_weight = "3b_fp8" if "fp8" in model else "3b_fp16"
     
     config = load_config(config_path)
-    debug.end_timer("config_load", "Config loaded")
+    debug.end_timer("config_load", "Config loading")
     # DiT model configuration is now handled directly in the YAML config files
     # No need for dynamic path resolution here anymore!
 
@@ -168,7 +154,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     OmegaConf.set_readonly(runner.config, False)
     # Store model name for cache validation
     runner._model_name = model
-    debug.end_timer("runner_video_infer", "Video diffusion inference runner initialized")
+    debug.end_timer("runner_video_infer", "Video diffusion inference runner initialization")
     
     # Set device
     device = str(get_device())
@@ -203,7 +189,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     # Pre-initialize RoPE cache for optimal performance if BlockSwap is NOT active
     if not blockswap_active:
         debug.start_timer("rope_cache_preinit")
-        preinitialize_rope_cache(runner, debug)
+        preinitialize_rope_cache(runner=runner, debug=debug)
         debug.end_timer("rope_cache_preinit", "RoPE cache pre-initialization")
     else:
         debug.log("Skipping RoPE cache pre-initialization (BlockSwap handles RoPE on-demand to save memory)", category="info")
@@ -342,7 +328,7 @@ def configure_dit_model_inference(runner, device, checkpoint, config,
     runner.dit.load_state_dict(state, strict=True, assign=True)
     if 'state' in locals():
         del state
-    debug.end_timer("dit_state_apply", "DiT state dict applied to model")
+    debug.end_timer("dit_state_apply", "DiT state dict application to model")
     debug.log_memory_state("After DiT weights loaded", detailed_tensors=False)
 
     # Apply universal compatibility wrapper to ALL models
@@ -444,7 +430,7 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
     
     if 'state' in locals():
         del state
-    debug.end_timer("vae_state_apply", "VAE state dict applied to model")
+    debug.end_timer("vae_state_apply", "VAE state dict application to model")
     debug.log_memory_state("After VAE weights loaded", detailed_tensors=False)
 
     # Set causal slicing if available

@@ -24,10 +24,10 @@ from src.common.distributed import get_device
 
 
 # Import required modules
-from src.optimization.memory_manager import manage_vae_device, clear_memory
+from src.optimization.memory_manager import clear_memory, release_text_embeddings, manage_model_device, complete_cleanup
 from src.optimization.performance import (
     optimized_video_rearrange, optimized_single_video_rearrange, 
-    optimized_sample_to_image_format, temporal_latent_blending
+    optimized_sample_to_image_format
 )
 from src.common.seed import set_seed
 try:
@@ -158,12 +158,14 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     
     # Process samples with advanced optimization
     samples = optimized_video_rearrange(video_tensors)
-    #last_latents = samples[-temporal_overlap:] if temporal_overlap > 0 else samples[-1:]
-    noises = noises[0].to("cpu")
-    aug_noises = aug_noises[0].to("cpu")
-    cond_latents = cond_latents[0].to("cpu")
-    conditions = conditions[0].to("cpu")
-    condition = condition.to("cpu")
+    
+    # Clean up temporary tensors
+    del noises[0], noises
+    del aug_noises[0], aug_noises  
+    del cond_latents[0], cond_latents
+    del conditions[0], conditions
+    del condition
+    del video_tensors
     
     return samples #, last_latents
 
@@ -328,7 +330,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
     
     # Memory cleanup
-    clear_memory(debug=debug, full=True, force=True)
+    clear_memory(debug=debug, deep=True, force=True)
 
     debug.end_timer("input_prep", "Input preparation", show_breakdown=True)
     debug.log_memory_state("After input preparation", detailed_tensors=False)
@@ -422,7 +424,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 # First batch: standard complete diffusion
 
                 # Move VAE to GPU if needed for encoding
-                manage_vae_device(runner, str(device), preserve_vram=False, debug=debug)
+                manage_model_device(model=runner.vae, target_device=str(device), model_name="VAE", preserve_vram=False, debug=debug)
                 debug.log(f"VAE encoding precision: {autocast_dtype}", category="precision")
                 debug.log("Encoding video to latents...", category="vae")
                 debug.log(f"Original batch shape: {video.shape[1:]} frames @ {images[0].shape[0]}x{images[0].shape[1]}", category="info")
@@ -435,7 +437,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 
                 # Move VAE back to CPU after encoding if preserve_vram is enabled
                 if preserve_vram:
-                    manage_vae_device(runner, 'cpu', preserve_vram=preserve_vram, debug=debug)
+                    manage_model_device(model=runner.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=debug)
                 
                 debug.log_memory_state("After VAE encode", detailed_tensors=False)
 
@@ -500,34 +502,34 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                     
                 # Log memory state at the end of each batch
                 debug.end_timer("batch", f"Batch {batch_number} processed", show_breakdown=True)
-                debug.log_memory_state(f"After batch {batch_number} processing", detailed_tensors=True)
+                debug.log_memory_state(f"After batch {batch_number} processing", detailed_tensors=False)
 
     finally:
         debug.log("", category="none")
         debug.log(f"━━━ Batch generation cleanup ━━━", category="none")
         debug.start_timer("generation_cleanup")
-
-        # Final cleanup of embeddings
-        if text_pos_embeds.is_cuda and text_neg_embeds.is_cuda:
-            debug.log("Moving text embeddings to CPU (final cleanup)", category="general")
-            text_pos_embeds = text_pos_embeds.to("cpu")
-            text_neg_embeds = text_neg_embeds.to("cpu")
         
-        # Move DiT to CPU if needed
-        dit_device = next(runner.dit.parameters()).device
-        if not dit_device.type == "cpu":
-            debug.log("Moving DiT to CPU (final cleanup)", category="general")
-            debug.start_timer("dit_to_cpu_cleanup")
-            runner.dit.to("cpu")
-            debug.end_timer("dit_to_cpu_cleanup", "DiT moved to CPU (final cleanup)")
+        # Clean up local text embeddings
+        embeddings_to_clean = []
+        names_to_log = []
         
-        # Move VAE to CPU
-        manage_vae_device(runner, 'cpu', preserve_vram=False, debug=debug, reason="final cleanup")
+        if 'text_pos_embeds' in locals() and text_pos_embeds is not None:
+            embeddings_to_clean.append(text_pos_embeds)
+            names_to_log.append("text_pos_embeds")
         
-        # Memory cleanup
-        clear_memory(debug=debug, full=True, force=True)
-
-        # Log final memory state
+        if 'text_neg_embeds' in locals() and text_neg_embeds is not None:
+            embeddings_to_clean.append(text_neg_embeds)
+            names_to_log.append("text_neg_embeds")
+        
+        release_text_embeddings(*embeddings_to_clean, debug=debug, names=names_to_log)
+        
+        # Clean up video transform
+        if 'video_transform' in locals() and video_transform is not None:
+            for transform in video_transform.transforms:
+                if hasattr(transform, '__dict__'):
+                    transform.__dict__.clear()
+            del video_transform
+        
         debug.end_timer("generation_cleanup", "Batch generation cleanup")
         debug.log_memory_state("After batch generation cleanup", detailed_tensors=False)
     

@@ -14,14 +14,10 @@ from src.utils.constants import get_script_directory
 from src.utils.debug import Debug
 from src.core.model_manager import configure_runner
 from src.core.generation import generation_loop
-from src.optimization.blockswap import cleanup_blockswap
 from src.optimization.memory_manager import (
-    clear_rope_lru_caches, 
-    complete_model_deletion, 
-    clear_memory, 
-    clear_all_caches,
-    get_device_list,
-    reset_vram_peak
+    release_text_embeddings,
+    complete_cleanup, 
+    get_device_list
 )
 
 # Import ComfyUI progress reporting
@@ -59,7 +55,6 @@ class SeedVR2:
         Returns:
             Dictionary defining input parameters, types, and validation
         """
-        devices = get_device_list()
         return {
             "required": {
                 "images": ("IMAGE", ),
@@ -159,104 +154,32 @@ class SeedVR2:
 
     def cleanup(self, cache_model: bool = False, debug=None):
         """
-        Comprehensive cleanup with memory tracking
-
-        Args:
-            cache_model (bool): Whether to keep the model in RAM
-            debug: Optional Debug instance for logging
+        Cleanup runner and free memory
         """
-        # Determine if we should keep model cached
-        should_keep_model = cache_model and self.runner is not None
-        
-        # Get debug from runner if not provided (for __del__ case)
+        # Get debug from runner if not provided
         if debug is None and self.runner and hasattr(self.runner, 'debug'):
             debug = self.runner.debug
         
-        if debug is None:
-            # Silent cleanup for destructor case
-            return
-        
-        cleanup_type = "partial" if should_keep_model else "full"
-        debug.log(f"Starting {cleanup_type} cleanup", category="cleanup")
-        
-        # Perform partial or full cleanup based on model caching
-        if should_keep_model:            
-            # Clean BlockSwap with state preservation
-            if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
-                cleanup_blockswap(self.runner, keep_state_for_cache=True)
-            if self.runner:              
-                clear_all_caches(self.runner, debug, offload_vae=True)
-
-            debug.log("Models kept in RAM for next run", category="store")
+        # Consolidated cleanup function
+        if self.runner:
+            complete_cleanup(runner=self.runner, debug=debug, keep_models_in_ram=cache_model)
             
-        else:
-            if self.runner:
-                # Clean BlockSwap if active
-                if hasattr(self.runner, "_blockswap_active") and self.runner._blockswap_active:
-                    cleanup_blockswap(self.runner, keep_state_for_cache=False)
-                
-                # Clear cache
-                if hasattr(self.runner, 'cache') and hasattr(self.runner.cache, 'cache'):
-                    for key, value in list(self.runner.cache.cache.items()):
-                        if hasattr(value, 'cpu'):
-                            value.cpu()
-                        if hasattr(value, 'detach'):
-                            value.detach()
-                        del value
-                    self.runner.cache.cache.clear()
-                
-                # Clear DiT model completely
-                if hasattr(self.runner, 'dit') and self.runner.dit is not None:
-                    try:
-                        # Handle FP8CompatibleDiT wrapper
-                        if hasattr(self.runner.dit, 'dit_model'):
-                            clear_rope_lru_caches(self.runner.dit.dit_model)
-                            complete_model_deletion(self.runner.dit.dit_model)
-                            self.runner.dit.dit_model = None
-                        else:
-                            clear_rope_lru_caches(self.runner.dit)
-                        
-                        # Delete the entire dit (wrapper or direct)
-                        complete_model_deletion(self.runner.dit)
-                    except Exception as e:
-                        debug.log(f"Warning during DiT cleanup: {e}", level="WARNING", category="cleanup", force="True")
-                    finally:
-                        self.runner.dit = None
-                
-                # Clear VAE model completely
-                if hasattr(self.runner, 'vae') and self.runner.vae is not None:
-                    try:
-                        complete_model_deletion(self.runner.vae)
-                    except Exception as e:
-                        debug.log(f"Warning during VAE cleanup: {e}", level="WARNING", category="cleanup", force="True")
-                    finally:
-                        self.runner.vae = None
-                
-                # Clear other components
-                for component in ['sampler', 'sampling_timesteps', 'schedule', 'config']:
-                    if hasattr(self.runner, component):
-                        setattr(self.runner, component, None)
-                
-                del self.runner
+            if not cache_model:
                 self.runner = None
-            
-        # Clear embeddings
-        if self.text_pos_embeds is not None:
-            if hasattr(self.text_pos_embeds, 'cpu'):
-                self.text_pos_embeds.cpu()
-            del self.text_pos_embeds
-            self.text_pos_embeds = None
         
-        if self.text_neg_embeds is not None:
-            if hasattr(self.text_neg_embeds, 'cpu'):
-                self.text_neg_embeds.cpu()
-            del self.text_neg_embeds
-            self.text_neg_embeds = None
+        # Clear instance embeddings
+        release_text_embeddings(
+            self.text_pos_embeds, 
+            self.text_neg_embeds,
+            debug=debug,
+            names=["text_pos_embeds", "text_neg_embeds"] if debug else None
+        )
         
-        self.current_model_name = ""
+        self.text_pos_embeds = None
+        self.text_neg_embeds = None
         
-        # Final memory cleanup
-        clear_memory(debug=debug, full=True, force=True)
+        if not cache_model:
+            self.current_model_name = ""
 
 
     def _internal_execute(self, images, model, seed, new_resolution, cfg_scale, batch_size, 
@@ -282,7 +205,7 @@ class SeedVR2:
             if model_changed and self.runner is not None:
                 debug.log(f"Model changed from {current_model} to {model}, clearing cache...", category="cache")
                 self.cleanup(
-                    cache_model=False,  # Don't keep old model
+                    cache_model=False,
                     debug=debug,
                 )
                 self.runner = None
@@ -359,7 +282,7 @@ class SeedVR2:
         
         # Log final memory state after ALL cleanup is done
         debug.end_timer("final_cleanup", "Final cleanup", show_breakdown=True)
-        debug.log_memory_state("After final cleanup", detailed_tensors=True)
+        debug.log_memory_state("After final cleanup", detailed_tensors=False)
         
         # Final timing summary
         debug.log("\n━━━━━━━━━━━━━━━━━━", category="none")

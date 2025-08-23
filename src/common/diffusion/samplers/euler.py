@@ -74,7 +74,7 @@ class EulerSampler(Sampler):
             del pred
 
             # Clear memory - only when model is configured with sampling step > 1
-            clear_memory(debug=getattr(self, 'debug', None), full=False, force=True)
+            clear_memory(debug=getattr(self, 'debug', None), deep=False, force=True)
             
             i += 1
             progress.update()

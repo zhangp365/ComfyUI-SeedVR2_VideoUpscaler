@@ -17,7 +17,7 @@ import torch
 from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
-from src.optimization.memory_manager import clear_memory, manage_vae_device
+from src.optimization.memory_manager import clear_memory, manage_model_device
 
 from src.common.diffusion import (
     classifier_free_guidance_dispatcher,
@@ -337,13 +337,14 @@ class VideoDiffusionInfer():
         if preserve_vram:
             # Before sampling, check if BlockSwap is active
             if not use_blockswap and not hasattr(self, "_blockswap_active"):
-                self.debug.log("Moving DiT to GPU (inference requirement)", category="general")
-                self.debug.start_timer("dit_to_gpu")
-                self.dit = self.dit.to(get_device())
-                self.debug.end_timer("dit_to_gpu", "DiT to GPU")
-            else:
-                # BlockSwap manages device placement
-                pass
+                manage_model_device(
+                    model=self.dit,
+                    target_device=str(get_device()),
+                    model_name="DiT",
+                    preserve_vram=preserve_vram,
+                    debug=self.debug,
+                    reason="inference requirement"
+                )
 
         self.debug.start_timer("dit_inference")
         
@@ -385,17 +386,24 @@ class VideoDiffusionInfer():
         decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
         
         if preserve_vram and not hasattr(self, "_blockswap_active"):
-            self.debug.log("Moving DiT back to CPU (preserve_vram mode)", category="general")
-            self.debug.start_timer("dit_to_cpu")
-            self.dit = self.dit.to("cpu")
+            # Move DiT back to CPU
+            manage_model_device(
+                model=self.dit,
+                target_device="cpu",
+                model_name="DiT",
+                preserve_vram=preserve_vram,
+                debug=self.debug,
+                reason="preserve_vram mode"
+            )
+            # Move tensors to CPU as well to free VRAM
             latents_cond = latents_cond.to("cpu")
             latents_shapes = latents_shapes.to("cpu")
-            self.debug.end_timer("dit_to_cpu", "DiT moved to CPU (preserve_vram)")
+            # Clear memory for larger batches
             if latents[0].shape[0] > 1:
-                clear_memory(debug=self.debug, full=True, force=True)
+                clear_memory(debug=self.debug, deep=True, force=True)
 
         # Move VAE to GPU if needed for decoding
-        manage_vae_device(self, str(get_device()), preserve_vram=False, debug=self.debug)
+        manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)
         self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
         self.debug.log("Decoding latents to samples...", category="vae")
         self.debug.start_timer("vae_decode")
@@ -405,7 +413,7 @@ class VideoDiffusionInfer():
         
         # Move VAE back to CPU after decoding if preserve_vram is enabled
         if preserve_vram:
-            manage_vae_device(self, 'cpu', preserve_vram=preserve_vram, debug=self.debug)
+            manage_model_device(model=self.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=self.debug)
         
         self.debug.log_memory_state("After VAE decode", detailed_tensors=False)
         

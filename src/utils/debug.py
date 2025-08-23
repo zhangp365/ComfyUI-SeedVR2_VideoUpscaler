@@ -272,7 +272,7 @@ class Debug:
         self._store_checkpoint(label, memory_info)
 
         # Reset PyTorch's peak memory stats for next interval
-        reset_vram_peak(self)
+        reset_vram_peak(debug=self)
     
     def _collect_memory_metrics(self) -> Dict[str, Any]:
         """Collect current memory metrics efficiently."""
@@ -292,7 +292,7 @@ class Debug:
         
         # VRAM metrics
         if torch.cuda.is_available() or torch.mps.is_available():
-            metrics['vram_allocated'], metrics['vram_reserved'], current_global_peak = get_vram_usage()
+            metrics['vram_allocated'], metrics['vram_reserved'], current_global_peak = get_vram_usage(debug=self)
             
             # Calculate peak since last log_memory_state
             # This captures the actual peak that occurred between calls
@@ -316,7 +316,7 @@ class Debug:
             metrics['summary_vram'] = ""
         
         # RAM metrics using new function
-        metrics['ram_process'], metrics['ram_available'], metrics['ram_total'], metrics['ram_others'] = get_ram_usage()
+        metrics['ram_process'], metrics['ram_available'], metrics['ram_total'], metrics['ram_others'] = get_ram_usage(debug=self)
         
         if metrics['ram_total'] > 0:
             metrics['summary_ram'] = (f"  [RAM] {metrics['ram_process']:.2f}GB process / "

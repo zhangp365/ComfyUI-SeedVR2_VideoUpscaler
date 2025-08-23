@@ -4,23 +4,17 @@ Handles VRAM usage, cache management, and memory optimization
 
 Extracted from: seedvr2.py (lines 373-405, 607-626, 1016-1044)
 """
-\
+
 import torch
 import gc
 import sys
 import time
 import psutil
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional, List, Union
 from src.common.cache import Cache
 from src.common.distributed import get_device
-
-try:
-    from comfy import model_management as mm
-    COMFYUI_AVAILABLE = True
-except:
-    COMFYUI_AVAILABLE = False
-    pass
     
+
 def get_device_list():
   devs = ["none"]
   try:
@@ -37,6 +31,7 @@ def get_device_list():
     return devs[1:]
   return devs
     
+
 def get_basic_vram_info() -> Dict[str, Any]:
     """
     Get basic VRAM availability info (free and total memory).
@@ -63,6 +58,7 @@ def get_basic_vram_info() -> Dict[str, Any]:
     except Exception as e:
         return {"error": f"Failed to get memory info: {str(e)}"}
 
+
 # Initial VRAM check at module load
 vram_info = get_basic_vram_info()
 if "error" not in vram_info:
@@ -71,10 +67,14 @@ if "error" not in vram_info:
 else:
     print(f"⚠️ Memory check failed: {vram_info['error']} - No available backend!")
 
-def get_vram_usage() -> Tuple[float, float, float]:
+
+def get_vram_usage(debug: Optional[Any] = None) -> Tuple[float, float, float]:
     """
     Get current VRAM usage metrics for monitoring.
     Used for tracking memory consumption during processing.
+
+    Args:
+        debug: Optional debug instance for logging
     
     Returns:
         tuple: (allocated_gb, reserved_gb, max_allocated_gb)
@@ -92,19 +92,23 @@ def get_vram_usage() -> Tuple[float, float, float]:
             reserved = torch.mps.driver_allocated_memory() / (1024**3)
             max_allocated = allocated  # MPS doesn't track peak separately
             return allocated, reserved, max_allocated
-    except Exception:
-        pass
+    except Exception as e:
+        if debug:
+            debug.log(f"Failed to get VRAM usage: {e}", level="WARNING", category="memory", force=True)
     return 0.0, 0.0, 0.0
 
 
-def get_ram_usage() -> Tuple[float, float, float, float]:
+def get_ram_usage(debug: Optional[Any] = None) -> Tuple[float, float, float, float]:
     """
     Get current RAM usage metrics for the current process.
     Provides accurate tracking of process-specific memory consumption.
     
+    Args:
+        debug: Optional debug instance for logging
+    
     Returns:
         tuple: (process_gb, available_gb, total_gb, used_by_others_gb)
-               Returns (0, 0, 0, 0) if psutil not available
+               Returns (0, 0, 0, 0) if psutil not available or on error
     """
     try:
         if not psutil:
@@ -127,7 +131,9 @@ def get_ram_usage() -> Tuple[float, float, float, float]:
         
         return process_gb, available_gb, total_gb, used_by_others_gb
         
-    except Exception:
+    except Exception as e:
+        if debug:
+            debug.log(f"Failed to get RAM usage: {e}", level="WARNING", category="memory", force=True)
         return 0.0, 0.0, 0.0, 0.0
     
     
@@ -135,24 +141,28 @@ def get_ram_usage() -> Tuple[float, float, float, float]:
 _os_memory_lib = None
 
 
-def clear_memory(debug=None, full=False, force=True) -> None:
+def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = True) -> None:
     """
     Clear memory caches with two-tier approach for optimal performance.
     
     Args:
         debug: Debug instance for logging (optional)
         force: If True, always clear. If False, only clear when <15% free
-        full: If True, perform full cleanup including GC and OS operations.
+        deep: If True, perform deep cleanup including GC and OS operations.
               If False (default), only perform minimal GPU cache clearing.
     
     Two-tier approach:
-        - Minimal mode (full=False): GPU cache operations (~1-5ms)
+        - Minimal mode (deep=False): GPU cache operations (~1-5ms)
           Used for frequent calls during batch processing
-        - Full mode (full=True): Complete cleanup with GC and OS operations (~10-50ms)
+        - Deep mode (deep=True): Complete cleanup with GC and OS operations (~10-50ms)
           Used at key points like model switches or final cleanup
     """
     global _os_memory_lib
     
+    # Start timer for entire operation
+    if debug:
+        debug.start_timer("memory_clear")
+
     # Check if we should clear based on memory pressure
     if not force:
         should_clear = False
@@ -181,31 +191,39 @@ def clear_memory(debug=None, full=False, force=True) -> None:
             return
     
     # Determine cleanup level
-    cleanup_mode = "full" if full else "minimal"
+    cleanup_mode = "deep" if deep else "minimal"
     if debug:
         debug.log(f"Clearing memory caches ({cleanup_mode})...", category="cleanup")
     
     # ===== MINIMAL OPERATIONS (Always performed) =====
     # Step 1: Clear GPU caches - Fast operations (~1-5ms)
+    if debug:
+        debug.start_timer("gpu_cache_clear")
+    
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
     elif torch.mps.is_available():
         torch.mps.empty_cache()
     
-    # ===== FULL OPERATIONS (Only when full=True) =====
-    if full:
-        # Step 2: Clear PyTorch internal caches
-        if hasattr(torch, '_C'):
-            try:
-                torch._C._clear_cache()
-            except:
-                pass
-        
-        # Step 3: Full garbage collection (expensive ~5-20ms)
+    if debug:
+        debug.end_timer("gpu_cache_clear", "GPU cache clearing")
+
+    # ===== DEEP OPERATIONS (Only when deep=True) =====
+    if deep:
+        # Step 2: Deep garbage collection (expensive ~5-20ms)
+        if debug:
+            debug.start_timer("garbage_collection")
+
         gc.collect(2)
-        
-        # Step 4: Return memory to OS (platform-specific, ~5-30ms)
+
+        if debug:
+            debug.end_timer("garbage_collection", "Garbage collection")
+
+        # Step 3: Return memory to OS (platform-specific, ~5-30ms)
+        if debug:
+            debug.start_timer("os_memory_release")
+
         try:
             if sys.platform == 'linux':
                 # Linux: malloc_trim
@@ -233,76 +251,19 @@ def clear_memory(debug=None, full=False, force=True) -> None:
                 
                 if _os_memory_lib:
                     _os_memory_lib.sync()
-        except:
-            # OS-specific memory operations are optional
-            pass
-            
+        except Exception as e:
+            if debug:
+                debug.log(f"Failed to perform OS memory operations: {e}", level="WARNING", category="memory", force=True)
 
-def manage_vae_device(runner, target_device: str, preserve_vram: bool = False, 
-                     debug=None, reason: str = None) -> bool:
-    """
-    Manage VAE device placement with intelligent movement and logging.
+        if debug:
+            debug.end_timer("os_memory_release", "OS memory release")
     
-    Args:
-        runner: Runner instance containing the VAE
-        target_device: Target device ('cuda:0', 'cpu', etc.)
-        preserve_vram: Whether preserve_vram mode is active
-        debug: Debug instance for logging
-        reason: Optional custom reason for the movement
-        
-    Returns:
-        bool: True if VAE was moved, False if already on target device
-    """
-    if not hasattr(runner, 'vae') or runner.vae is None:
-        return False
-    
-    # Get current VAE device
-    current_device = next(runner.vae.parameters()).device if hasattr(runner.vae, 'parameters') else None
-    if current_device is None:
-        return False
-    
-    # Normalize device strings for comparison
-    target_type = target_device.split(':')[0] if ':' in target_device else target_device
-    current_type = str(current_device.type)
-    
-    # Skip if already on target device
-    if current_type == target_type:
-        return False
-    
-    # Determine reason for movement
-    if reason:
-        reason = reason
-    elif preserve_vram:
-        reason = "preserve_vram"
-    else:
-        reason = "inference requirement"
-    
-    # Start timer based on direction
-    timer_name = "vae_to_gpu" if target_type != 'cpu' else "vae_to_cpu"
+    # End overall timer
     if debug:
-        debug.start_timer(timer_name)
-    
-    # Log the movement
-    if debug:
-        if target_type == 'cpu':
-            debug.log(f"Moving VAE to CPU ({reason})", category="general")
-        else:
-            debug.log(f"Moving VAE from {current_type} to {target_device} ({reason})", category="memory")
-    
-    # Move VAE
-    runner.vae = runner.vae.to(target_device)
-    
-    # End timer
-    if debug:
-        if target_type == 'cpu':
-            debug.end_timer(timer_name, "VAE moved to CPU")
-        else:
-            debug.end_timer(timer_name, "VAE moved to GPU")
-    
-    return True
+        debug.end_timer("memory_clear", "clear_memory() completion")
 
 
-def reset_vram_peak(debug) -> None:
+def reset_vram_peak(debug: Optional[Any]) -> None:
     """
     Reset VRAM peak memory statistics for fresh tracking.
     """
@@ -315,7 +276,7 @@ def reset_vram_peak(debug) -> None:
     except Exception as e:
         debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
 
-def preinitialize_rope_cache(runner, debug) -> None:
+def preinitialize_rope_cache(runner: Any, debug: Optional[Any]) -> None:
     """
     🚀 Pre-initialize RoPE cache to avoid OOM at first launch
     
@@ -379,7 +340,7 @@ def preinitialize_rope_cache(runner, debug) -> None:
                         except Exception as e:
                             debug.log(f"Failed pre-initializing RoPE cache for {cache_key}: {e}", level="ERROR", category="setup", force=True)
                             # Return empty tensors as fallback
-                            clear_memory(debug=debug, full=True, force=True)
+                            clear_memory(debug=debug, deep=True, force=True)
                             time.sleep(1)
 
                             return torch.zeros(1, 64)
@@ -404,246 +365,285 @@ def preinitialize_rope_cache(runner, debug) -> None:
         debug.log("Model will work but could have OOM at first launch", level="WARNING", category="info", force=True)
 
 
-def clear_rope_lru_caches(model) -> int:
-    """Clear ALL LRU caches from RoPE modules"""
-    cleared_count = 0
+def clear_rope_lru_caches(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> int:
+    """
+    Clear ALL LRU caches from RoPE modules.
     
+    Args:
+        model: PyTorch model to clear caches from
+        debug: Optional debug instance for logging
+        
+    Returns:
+        Number of caches cleared
+    """
     if model is None:
         return 0
     
+    cleared_count = 0
     try:
         for name, module in model.named_modules():
             if hasattr(module, 'get_axial_freqs') and hasattr(module.get_axial_freqs, 'cache_clear'):
-                module.get_axial_freqs.cache_clear()
-                cleared_count += 1
-    except AttributeError:
-        # Model structure already damaged, skip
-        pass
+                try:
+                    module.get_axial_freqs.cache_clear()
+                    cleared_count += 1
+                except Exception as e:
+                    if debug:
+                        debug.log(f"Failed to clear RoPE LRU cache for module {name}: {e}", level="WARNING", category="memory", force=True)
+    except (AttributeError, RuntimeError) as e:
+        if debug:
+            debug.log(f"Failed to iterate model modules for RoPE LRU cache clearing: {e}", level="WARNING", category="memory", force=True)
     
     return cleared_count
 
 
-def complete_model_deletion(model):
-    """Completely delete a model and free all its memory"""
+def release_tensor_memory(tensor: Optional[torch.Tensor]) -> None:
+    """Release tensor memory properly without CPU allocation"""
+    if tensor is not None and torch.is_tensor(tensor):
+        if tensor.is_cuda or tensor.is_mps:
+            # Release GPU memory directly without CPU transfer
+            if tensor.numel() > 0:
+                tensor.data.set_()
+        tensor.grad = None
+
+
+def release_text_embeddings(*embeddings: torch.Tensor, debug: Optional[Any] = None, names: Optional[List[str]] = None) -> None:
+    """
+    Release memory for text embeddings
+    
+    Args:
+        *embeddings: Variable number of embedding tensors to release
+        debug: Optional debug instance for logging
+        names: Optional list of names for logging
+    """
+    for i, embedding in enumerate(embeddings):
+        if embedding is not None:
+            release_tensor_memory(embedding)
+            if debug and names and i < len(names):
+                debug.log(f"Cleaned up {names[i]}", category="cleanup")
+
+
+def release_model_memory(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> None:
+    """
+    Release all GPU/MPS memory from model in-place without CPU transfer.
+    
+    Args:
+        model: PyTorch model to release memory from
+        debug: Optional debug instance for logging
+    """
     if model is None:
         return
     
     try:
-        # Move to CPU first
-        model.to("cpu")
+        # Clear gradients first
+        model.zero_grad(set_to_none=True)
         
-        # Clear parameters and buffers recursively and release storage
-        def clear_recursive(m):
-            # Process children first
-            for child in m.children():
-                clear_recursive(child)
-            
-            # Clear parameters and release storage
-            if hasattr(m, '_parameters'):
-                for param_name, param in list(m._parameters.items()):
-                    if param is not None:
-                        param.data = param.data.cpu()
-                        param.grad = None
-                        # Release underlying storage
-                        if param.data.numel() > 0:
-                            param.data.set_()
-            
-            # Clear buffers and release storage
-            if hasattr(m, '_buffers'):
-                for buffer_name, buffer in list(m._buffers.items()):
-                    if buffer is not None:
-                        buffer.data = buffer.data.cpu()
-                        # Release underlying storage
-                        if buffer.data.numel() > 0:
-                            buffer.data.set_()
+        # Release GPU memory directly without CPU transfer
+        released_params = 0
+        released_buffers = 0
         
-        clear_recursive(model)
+        for param in model.parameters():
+            if param.is_cuda or param.is_mps:
+                if param.numel() > 0:
+                    param.data.set_()
+                    released_params += 1
+                param.grad = None
+                
+        for buffer in model.buffers():
+            if buffer.is_cuda or buffer.is_mps:
+                if buffer.numel() > 0:
+                    buffer.data.set_()
+                    released_buffers += 1
         
-        # Clear all module dicts but keep the structure
-        if hasattr(model, 'modules'):
-            for module in model.modules():
-                # Clear custom attributes but keep PyTorch internals
-                if hasattr(module, '__dict__'):
-                    keys_to_delete = []
-                    for key in module.__dict__.keys():
-                        # Keep PyTorch internal attributes
-                        if not key.startswith('_') or key.startswith('_original_'):
-                            keys_to_delete.append(key)
-                    for key in keys_to_delete:
-                        try:
-                            delattr(module, key)
-                        except:
-                            pass
-        
-        # Now clear the model's dict
-        if hasattr(model, '__dict__'):
-            # Clear everything except PyTorch internals
-            keys_to_delete = []
-            for key in model.__dict__.keys():
-                if not key in ['_modules', '_parameters', '_buffers', 'training']:
-                    keys_to_delete.append(key)
-            for key in keys_to_delete:
-                try:
-                    delattr(model, key)
-                except:
-                    pass
-    except AttributeError:
-        # Model already partially cleaned, that's OK
-        pass
-    
-    # Final cleanup - now we can clear everything
-    if hasattr(model, '__dict__'):
-        model.__dict__.clear()
+        if debug and (released_params > 0 or released_buffers > 0):
+            debug.log(f"Released memory from {released_params} params and {released_buffers} buffers", category="success")
+                
+    except (AttributeError, RuntimeError) as e:
+        if debug:
+            debug.log(f"Failed to release model memory: {e}", level="WARNING", category="memory", force=True)
 
-def clear_all_caches(runner, debug, offload_vae=False) -> int:
+
+def manage_model_device(model, target_device: str, model_name: str = "model",
+                       preserve_vram: bool = False, debug=None, reason: str = None) -> bool:
     """
-    Aggressively clear all caches from runner and model.
-    Optimized to only process what's necessary.
+    Unified model device management with intelligent movement and logging.
     
     Args:
-        runner: The runner instance to clear caches from
-        debug: Optional Debug instance for logging
-        offload_vae: If True, also moves VAE to CPU and clears its caches
+        model: The model to move
+        target_device: Target device ('cuda:0', 'cpu', etc.)
+        model_name: Name for logging (e.g., "VAE", "DiT")
+        preserve_vram: Whether preserve_vram mode is active
+        debug: Debug instance for logging
+        reason: Optional custom reason for the movement
+        
+    Returns:
+        bool: True if model was moved, False if already on target device
+    """
+    if model is None:
+        return False
+    
+    # Get current device
+    try:
+        current_device = next(model.parameters()).device
+    except StopIteration:
+        return False
+    
+    # Normalize device strings for comparison
+    target_type = target_device.split(':')[0] if ':' in target_device else target_device
+    current_type = str(current_device.type)
+    
+    # Skip if already on target device
+    if current_type == target_type:
+        return False
+    
+    # Determine reason for movement
+    if not reason:
+        reason = "preserve_vram" if preserve_vram else "inference requirement"
+    
+    # Start timer based on direction
+    timer_name = f"{model_name.lower()}_to_{'gpu' if target_type != 'cpu' else 'cpu'}"
+    if debug:
+        debug.start_timer(timer_name)
+    
+    # Log the movement
+    if debug:
+        if target_type == 'cpu':
+            debug.log(f"Moving {model_name} to CPU ({reason})", category="general")
+        else:
+            debug.log(f"Moving {model_name} from {current_type} to {target_device} ({reason})", category="memory")
+    
+    # Move model and clear gradients
+    model.to(target_device)
+    model.zero_grad(set_to_none=True)
+    
+    # End timer
+    if debug:
+        if target_type == 'cpu':
+            debug.end_timer(timer_name, f"{model_name} moved to CPU")
+        else:
+            debug.end_timer(timer_name, f"{model_name} moved to GPU")
+    
+    return True
+
+
+def clear_runtime_caches(runner: Any, debug: Optional[Any]) -> int:
+    """
+    Clear all runtime caches and temporary attributes.
     """
     if not runner:
         return 0
     
+    if debug:
+        debug.start_timer("runtime_cache_clear")
+    
     cleaned_items = 0
     
-    # Early exit if no caches to clear
-    has_cache = hasattr(runner, 'cache') and hasattr(runner.cache, 'cache')
-    if not has_cache and not hasattr(runner, 'dit') and not (offload_vae and hasattr(runner, 'vae')):
-        return 0
-    
-    # Clear main runner cache efficiently
-    if has_cache and runner.cache.cache:
+    # 1. Clear main runner cache
+    if hasattr(runner, 'cache') and hasattr(runner.cache, 'cache'):
+        if debug:
+            debug.start_timer("runner_cache_clear")
+
         cache_entries = len(runner.cache.cache)
         
-        # Process all cache items to properly free memory
+        # Properly release tensor memory
         for key, value in list(runner.cache.cache.items()):
             if torch.is_tensor(value):
-                # Force deallocation of tensor storage
-                if value.is_cuda or value.is_mps:
-                    value.data = value.data.cpu()
-                value.grad = None
-                if value.numel() > 0:
-                    value.data.set_()  # Release underlying storage
+                release_tensor_memory(value)
             elif isinstance(value, (list, tuple)):
                 for item in value:
                     if torch.is_tensor(item):
-                        if item.is_cuda or item.is_mps:
-                            item.data = item.data.cpu()
-                        item.grad = None
-                        if item.numel() > 0:
-                            item.data.set_()
+                        release_tensor_memory(item)
         
-        # Clear the cache after processing
         runner.cache.cache.clear()
         cleaned_items += cache_entries
-        debug.log(f"Cleared {cache_entries} cache entries", category="success")
-    
-    # Clear any accumulated state in blocks
-    if hasattr(runner, 'dit'):
-        model = runner.dit
-        if hasattr(model, 'dit_model'):
-            model = model.dit_model
 
-        # Clear RoPE LRU caches
-        rope_caches_cleared = clear_rope_lru_caches(model)
-        cleaned_items += rope_caches_cleared
-        if rope_caches_cleared > 0:
-            debug.log(f"Cleared {rope_caches_cleared} RoPE LRU caches", category="success")
-            
-        # Clear block attributes if needed
-        if hasattr(model, 'blocks'):
-            block_attrs_cleared = 0
-            
-            # Define PyTorch's essential attributes that must NOT be deleted
-            essential_attrs = {
-                '_modules', '_parameters', '_buffers', 
-                '_forward_hooks', '_forward_pre_hooks', 
-                '_backward_hooks', '_backward_pre_hooks',
-                '_state_dict_hooks', '_state_dict_pre_hooks',
-                '_load_state_dict_pre_hooks', '_load_state_dict_post_hooks',
-                '_non_persistent_buffers_set', '_version',
-                '_is_full_backward_hook', 'training',
-                '_original_forward',  # BlockSwap attribute
-                '_is_io_wrapped',     # BlockSwap attribute
-                '_block_idx',         # BlockSwap attribute
-            }
-            
-            for idx, block in enumerate(model.blocks):
-                # Get all attributes that look like caches
-                attrs_to_remove = []
-                for attr_name in list(block.__dict__.keys()):
-                    # Only remove cache-like attributes, not essential PyTorch attributes
-                    if (attr_name not in essential_attrs and 
-                        ('cache' in attr_name or 
-                         'temp' in attr_name or 
-                         (attr_name.startswith('_') and 
-                          not attr_name.startswith('__') and 
-                          attr_name not in essential_attrs))):
-                        attrs_to_remove.append(attr_name)
-                
-                # Remove the identified attributes
-                for attr_name in attrs_to_remove:
-                    try:
-                        delattr(block, attr_name)
-                        block_attrs_cleared += 1
-                    except AttributeError:
-                        pass  # Already deleted or doesn't exist
-                            
-            if block_attrs_cleared > 0:
-                debug.log(f"Cleared {block_attrs_cleared} temporary attributes from blocks", category="success")
+        if debug:
+            debug.end_timer("runner_cache_clear", f"Clearing main runner cache entries")
+
+        if cache_entries > 0:
+            debug.log(f"Cleared {cache_entries} runtime cache entries", category="success")
     
-    # Clear any temporary attributes that might accumulate
+    # 2. Clear RoPE caches
+    if hasattr(runner, 'dit'):
+        if debug:
+            debug.start_timer("rope_cache_clear")
+
+        model = runner.dit
+        if hasattr(model, 'dit_model'):  # Handle wrapper
+            model = model.dit_model
+        
+        rope_cleared = clear_rope_lru_caches(model=model, debug=debug)
+        cleaned_items += rope_cleared
+        if debug:
+            debug.end_timer("rope_cache_clear", "Clearing RoPE LRU caches")
+
+        if rope_cleared > 0:
+            debug.log(f"Cleared {rope_cleared} RoPE LRU caches", category="success")
+    
+    # 3. Clear temporary attributes
     temp_attrs = ['_temp_cache', '_block_cache', '_swap_cache', '_generation_cache',
                   '_rope_cache', '_intermediate_cache', '_backward_cache']
     
-    # Check both runner and model for these attributes
-    for obj in [runner, getattr(runner, 'dit', None)]:
+    for obj in [runner, getattr(runner, 'dit', None), getattr(runner, 'vae', None)]:
         if obj is None:
             continue
             
-        # Handle wrapped models
-        if hasattr(obj, 'dit_model'):
-            obj = obj.dit_model
-            
+        actual_obj = obj.dit_model if hasattr(obj, 'dit_model') else obj
+        
         for attr in temp_attrs:
-            if hasattr(obj, attr):
-                delattr(obj, attr)
+            if hasattr(actual_obj, attr):
+                delattr(actual_obj, attr)
                 cleaned_items += 1
-                debug.log(f"Cleared {attr} from {type(obj).__name__}", category="success")
-    
-    # Handle VAE offloading if requested
-    if offload_vae and hasattr(runner, 'vae') and runner.vae is not None:
-        # Clear intermediate tensors BEFORE moving to CPU (more efficient)
-        vae_caches_cleared = 0
-        for module in runner.vae.modules():
-            # Clear module-specific caches
-            for cache_attr in ['_temp_cache', '_intermediate_cache']:
-                if hasattr(module, cache_attr):
-                    delattr(module, cache_attr)
-                    vae_caches_cleared += 1
-            
-            # Clear any CUDA tensors in module attributes
-            for attr_name in list(vars(module).keys()):
-                attr = getattr(module, attr_name, None)
-                if torch.is_tensor(attr) and (attr.is_cuda or attr.is_mps):
-                    # Move tensor to CPU if it's not a parameter/buffer
-                    if attr_name not in module._parameters and attr_name not in module._buffers:
-                        setattr(module, attr_name, attr.cpu())
-                        vae_caches_cleared += 1
-        
-        if vae_caches_cleared > 0:
-            debug.log(f"Cleared {vae_caches_cleared} VAE caches", category="success")
-        
-        # Now move VAE to CPU using helper
-        manage_vae_device(runner, 'cpu', preserve_vram=True, debug=debug)
-        cleaned_items += vae_caches_cleared
-                
-    # Final memory cleanup
-    clear_memory(debug=debug, full=True, force=True)
+
+    if debug:
+        debug.end_timer("runtime_cache_clear", f"clear_runtime_caches() completion")
 
     return cleaned_items
+
+
+def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool = False) -> None:
+    """
+    Complete cleanup of runner and all components.
+    """
+    if not runner:
+        return
     
+    cleanup_type = "partial cleanup (keeping models in RAM)" if keep_models_in_ram else "full cleanup"
+    if debug:
+        debug.log(f"Starting {cleanup_type}", category="cleanup")
+    
+    # 1. Clean BlockSwap if active
+    if hasattr(runner, "_blockswap_active") and runner._blockswap_active:
+        # Import here to avoid circular dependency
+        from src.optimization.blockswap import cleanup_blockswap
+        cleanup_blockswap(runner, keep_state_for_cache=keep_models_in_ram)
+    
+    # 2. Clear all runtime caches
+    clear_runtime_caches(runner=runner, debug=debug)
+    
+    if keep_models_in_ram:
+        # 3a. Partial cleanup - move models to CPU but keep structure
+        if hasattr(runner, 'dit'):
+            manage_model_device(model=runner.dit, target_device='cpu', model_name="DiT", preserve_vram=True, debug=debug, reason="model caching")
+        
+        if hasattr(runner, 'vae'):
+            manage_model_device(model=runner.vae, target_device='cpu', model_name="VAE", preserve_vram=True, debug=debug, reason="model caching")
+    else:
+        # 3b. Full cleanup - release memory and delete
+        if hasattr(runner, 'dit'):
+            release_model_memory(model=runner.dit, debug=debug)
+            runner.dit = None
+            debug.log("DiT model deleted", category="cleanup")
+        
+        if hasattr(runner, 'vae'):
+            release_model_memory(model=runner.vae, debug=debug)
+            runner.vae = None
+            debug.log("VAE model deleted", category="cleanup")
+        
+        # Clear other components
+        for component in ['sampler', 'sampling_timesteps', 'schedule', 'config']:
+            if hasattr(runner, component):
+                setattr(runner, component, None)
+    
+    # 4. Final memory cleanup
+    clear_memory(debug=debug, deep=True, force=True)
+    debug.log(f"Completed {cleanup_type}", category="success")

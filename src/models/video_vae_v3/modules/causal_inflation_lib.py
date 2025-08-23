@@ -167,7 +167,7 @@ class InflatedCausalConv3d(Conv3d):
             output = torch.cat(x, split_dim)
         except Exception as e:
             self.debug.log(f"OOM - Clearing memory and retrying: Concatenating conv splits: {e}", level="WARNING", category="memory", force=True)
-            clear_memory(debug=self.debug, full=True, force=True)
+            clear_memory(debug=self.debug, deep=True, force=True)
             time.sleep(1)
             output = torch.cat(x, split_dim)
         return output
@@ -350,7 +350,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     except Exception as e:
                         norm_layer.debug.log(f"OOM - Clearing memory and retrying: Group Norm chunk: {e}", level="WARNING", category="memory", force=True)
-                        clear_memory(debug=getattr(norm_layer, 'debug', None), full=True, force=True)
+                        clear_memory(debug=getattr(norm_layer, 'debug', None), deep=True, force=True)
                         time.sleep(1)
                         x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
                     x[i] = x[i].to(input_dtype)
@@ -359,7 +359,7 @@ def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor, preserve_vram: b
                     x = torch.cat(x, dim=1)
                 except Exception as e:
                     norm_layer.debug.log(f"OOM - Clearing memory and retrying: Concatenating norm chunks: {e}", level="WARNING", category="memory", force=True)
-                    clear_memory(debug=getattr(norm_layer, 'debug', None), full=True, force=True)
+                    clear_memory(debug=getattr(norm_layer, 'debug', None), deep=True, force=True)
                     time.sleep(1)
                     x = torch.cat(x, dim=1)
             else:
