@@ -107,7 +107,7 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor, debug):
     """
     # Vérifier et ajuster les dimensions si nécessaire
     if content_feat.shape != style_feat.shape:
-        debug.log(f"Dimension mismatch detected: content {content_feat.shape} vs style {style_feat.shape}", category="warning", force=True)
+        debug.log(f"Dimension mismatch detected: content {content_feat.shape} vs style {style_feat.shape}", level="WARNING", category="precision", force=True)
         
         # Redimensionner style_feat pour correspondre à content_feat
         target_shape = content_feat.shape
@@ -130,7 +130,7 @@ def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor, debug):
     
     # Vérification finale avant addition
     if content_high_freq.shape != style_low_freq.shape:
-        debug.log(f"Final adjustment needed: {content_high_freq.shape} vs {style_low_freq.shape}", category="warning", force=True)
+        debug.log(f"Final adjustment needed: {content_high_freq.shape} vs {style_low_freq.shape}", level="WARNING", category="precision", force=True)
         style_low_freq = safe_interpolate_operation(
             style_low_freq,
             size=content_high_freq.shape[-2:],

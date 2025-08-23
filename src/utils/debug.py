@@ -7,10 +7,10 @@ for all pipeline stages, including BlockSwap operations.
 
 import time
 import torch
-import psutil
 import gc
-from typing import Optional, List, Dict, Any, Tuple, Union, Set
-from src.optimization.memory_manager import get_vram_usage, get_basic_vram_info
+from typing import Optional, List, Dict, Any, Union
+from src.optimization.memory_manager import get_vram_usage, get_basic_vram_info, get_ram_usage, reset_vram_peak
+from contextlib import contextmanager
 
 
 class Debug:
@@ -57,12 +57,14 @@ class Debug:
         self.enabled = enabled
         self.timers: Dict[str, float] = {}
         self.memory_checkpoints: List[Dict[str, Any]] = []
+        self.max_checkpoints = 100
         self.timer_hierarchy: Dict[str, List[str]] = {}
         self.timer_durations: Dict[str, float] = {}
         self.timer_messages: Dict[str, str] = {} 
         self.swap_times: List[Dict[str, Any]] = []
         self.vram_history: List[float] = []
         self.active_timer_stack: List[str] = [] 
+        self.timer_namespace: str = "" 
         
     def log(self, message: str, level: str = "INFO", category: str = "general", force: bool = False) -> None:
         """
@@ -93,6 +95,23 @@ class Debug:
             
             print(f"{prefix} {message}")
     
+    @contextmanager
+    def timer_context(self, namespace: str):
+        """
+        Context manager for setting a timer namespace temporarily.
+        All timers started within this context will be prefixed with the namespace.
+        
+        Usage:
+            with debug.timer_context("batch_1"):
+                debug.start_timer("vae_encode")  # Will be "batch_1_vae_encode"
+        """
+        old_namespace = self.timer_namespace
+        self.timer_namespace = namespace
+        try:
+            yield
+        finally:
+            self.timer_namespace = old_namespace
+            
     def start_timer(self, name: str, force: bool = False) -> None:
         """
         Start a named timer
@@ -102,6 +121,10 @@ class Debug:
             force: If True, start timer even when debug is disabled
         """
         if self.enabled or force:
+            # Apply namespace if set
+            if self.timer_namespace:
+                name = f"{self.timer_namespace}_{name}"
+
             self.timers[name] = time.time()
             
             # Auto-hierarchy: if there's an active timer, this is a child
@@ -132,6 +155,10 @@ class Debug:
         Returns:
             Duration in seconds (0.0 if timer not found)
         """
+        # Apply namespace if set
+        if self.timer_namespace:
+            name = f"{self.timer_namespace}_{name}"
+
         # Check if timer exists
         if name not in self.timers:
             return 0.0
@@ -199,216 +226,256 @@ class Debug:
                 self.log(f"  └─ (other operations): {unaccounted:.2f}s", category="timing", force=force)
         
         return duration
-        
+
     def log_memory_state(self, label: str, show_diff: bool = True, show_tensors: bool = True, 
-                     detailed_tensors: bool = False) -> None:
-        """Log current memory usage with optional diff and tensor count
+                        detailed_tensors: bool = False) -> None:
+        """
+        Log current memory state with minimal overhead.
         
         Args:
-            label: Description label for this memory checkpoint
-            show_diff: Show difference from last checkpoint
-            show_tensors: Show tensor counts
-            detailed_tensors: Show detailed tensor analysis (shapes, sizes, etc.)
+            label: Description for this checkpoint
+            show_diff: Show change from last checkpoint
+            show_tensors: Include tensor counts
+            detailed_tensors: Show detailed tensor analysis (use sparingly)
         """
         if not self.enabled:
             return
         
-        # GPU Memory
-        if torch.cuda.is_available():
-            vram_allocated, vram_reserved, vram_max_allocated = get_vram_usage()
-            vram_basic_info = get_basic_vram_info()
-            
-            if "error" not in vram_basic_info:
-                vram_free = vram_basic_info["free_gb"]
-                vram_total = vram_basic_info["total_gb"]
-                vram_used = vram_total - vram_free
-                
-                # Clear, concise VRAM format
-                vram_info = (f"[VRAM] {vram_allocated:.2f}GB allocated / "
-                            f"{vram_reserved:.2f}GB reserved / "
-                            f"{vram_free:.2f}GB free / "
-                            f"{vram_total:.2f}GB total")
-                self.vram_history.append(vram_allocated)
-            else:
-                vram_used = 0
-                vram_free = 0
-                vram_info = "VRAM: CPU mode"
-        elif torch.mps.is_available():
-            vram_used = 0
-            vram_free = 0
-            vram_info = "VRAM: MPS mode"
-        else:
-            vram_used = 0
-            vram_free = 0
-            vram_info = "VRAM: CPU mode"
+        # Collect memory metrics efficiently
+        memory_info = self._collect_memory_metrics()
         
-        # RAM Memory - Clear and informative
-        ram_info = ""
-        ram_process_gb = 0
-        if psutil:
-            try:
-                # Process-specific memory
-                process = psutil.Process()
-                mem_info = process.memory_info()
-                ram_process_gb = mem_info.rss / (1024**3)  # Physical memory used by our process
-                
-                # System-wide memory
-                sys_mem = psutil.virtual_memory()
-                ram_total_gb = sys_mem.total / (1024**3)
-                ram_available_gb = sys_mem.available / (1024**3)
-                
-                # Calculate what's used by other processes
-                ram_others_gb = ram_total_gb - ram_available_gb - ram_process_gb
-                
-                # Clear format matching user's request
-                ram_info = (f" --- [RAM] {ram_process_gb:.1f}GB SeedVR2 / "
-                        f"{ram_others_gb:.1f}GB other processes / "
-                        f"{ram_available_gb:.1f}GB free / "
-                        f"{ram_total_gb:.1f}GB total ")
-                        
-            except Exception:
-                # Fallback to basic info
-                try:
-                    process = psutil.Process()
-                    ram_process_gb = process.memory_info().rss / (1024**3)
-                    ram_info = f" | RAM: {ram_process_gb:.1f}GB used"
-                except:
-                    pass
-        
-        # Tensor count and detailed analysis
-        tensor_info = ""
+        # Show category
+        self.log(f"{label}:", category="memory")
+
+        # Show VRAM
+        if memory_info['summary_vram']:
+            self.log(f"{memory_info['summary_vram']}", category="memory")
+
+        # Show RAM
+        if memory_info['summary_ram']:
+            self.log(f"{memory_info['summary_ram']}", category="memory")
+
+        # Show tensors
         if show_tensors:
-            # Collect all tensors
-            all_tensors = []
-            for obj in gc.get_objects():
-                try:
-                    if torch.is_tensor(obj):
-                        all_tensors.append(obj)
-                except:
-                    pass
-            
-            # Separate by device
-            gpu_tensors = [t for t in all_tensors if t.is_cuda or t.is_mps]
-            cpu_tensors = [t for t in all_tensors if not (t.is_cuda or t.is_mps)]
-            
-            tensor_info = f" --- [Tensors] {len(gpu_tensors)} on GPU / {len(all_tensors)} total"
-            
-            # Detailed tensor analysis
-            if detailed_tensors and (gpu_tensors or cpu_tensors):
-                self.log("\n" + "─" * 60, category="memory")
-                self.log("DETAILED TENSOR ANALYSIS", category="memory")
-                self.log("─" * 60, category="memory")
-                
-                # GPU Tensors Analysis
-                if gpu_tensors:
-                    # Calculate total memory
-                    gpu_memory = sum(t.element_size() * t.nelement() for t in gpu_tensors)
-                    self.log(f"\nGPU Tensors: {len(gpu_tensors)} tensors using {gpu_memory / 1024**3:.2f} GB", category="memory")
-                    
-                    # Group by shape for pattern recognition
-                    shape_groups = {}
-                    for t in gpu_tensors:
-                        shape_key = str(list(t.shape))
-                        if shape_key not in shape_groups:
-                            shape_groups[shape_key] = {
-                                'count': 0,
-                                'dtype': str(t.dtype),
-                                'size_mb': t.element_size() * t.nelement() / 1024**2,
-                                'example': t
-                            }
-                        shape_groups[shape_key]['count'] += 1
-                    
-                    # Sort by total memory used (count * size)
-                    sorted_shapes = sorted(
-                        shape_groups.items(), 
-                        key=lambda x: x[1]['count'] * x[1]['size_mb'], 
-                        reverse=True
-                    )
-                    
-                    self.log("\nTop GPU tensor patterns (by total memory):", category="memory")
-                    for i, (shape, info) in enumerate(sorted_shapes[:10]):
-                        total_mb = info['count'] * info['size_mb']
-                        self.log(f"  {i+1}. Shape {shape} × {info['count']} = {total_mb:.1f} MB total", category="memory")
-                        self.log(f"     Each: {info['size_mb']:.1f} MB, dtype: {info['dtype']}", category="memory")
-                    
-                    # Show largest individual tensors
-                    self.log("\nLargest individual GPU tensors:", category="memory")
-                    sorted_gpu = sorted(gpu_tensors, key=lambda t: t.element_size() * t.nelement(), reverse=True)
-                    for i, t in enumerate(sorted_gpu[:5]):
-                        size_mb = t.element_size() * t.nelement() / 1024**2
-                        self.log(f"  {i+1}. Shape: {list(t.shape)}, Size: {size_mb:.1f} MB, Dtype: {t.dtype}", category="memory")
-                        
-                        # Try to identify what it might be
-                        shape = t.shape
-                        if len(shape) == 4 and shape[1] in [320, 640, 1280, 1920]:  # UNet features
-                            self.log(f"     → Likely UNet feature map", category="memory")
-                        elif len(shape) == 2 and shape[0] == shape[1]:  # Square matrix
-                            self.log(f"     → Likely attention matrix", category="memory")
-                        elif len(shape) == 2 and shape[1] in [768, 1024, 2048, 4096]:  # Embeddings
-                            self.log(f"     → Likely embedding/hidden states", category="memory")
-                
-                # CPU Tensors Analysis (brief)
-                if cpu_tensors:
-                    cpu_memory = sum(t.element_size() * t.nelement() for t in cpu_tensors)
-                    self.log(f"\nCPU Tensors: {len(cpu_tensors)} tensors using {cpu_memory / 1024**3:.2f} GB", category="memory")
-                    
-                    # Just show a few largest
-                    sorted_cpu = sorted(cpu_tensors, key=lambda t: t.element_size() * t.nelement(), reverse=True)
-                    self.log("Largest CPU tensors:", category="memory")
-                    for i, t in enumerate(sorted_cpu[:3]):
-                        size_mb = t.element_size() * t.nelement() / 1024**2
-                        self.log(f"  {i+1}. Shape: {list(t.shape)}, Size: {size_mb:.1f} MB", category="memory")
-                
-                # Try to find model references
-                self.log("\n" + "─" * 60, category="memory")
-                
-                # Check for nn.Module instances
-                modules = [obj for obj in gc.get_objects() if isinstance(obj, torch.nn.Module)]
-                if modules:
-                    self.log(f"Found {len(modules)} nn.Module instances", category="memory")
-                    
-                    # Count by type
-                    module_types = {}
-                    for m in modules:
-                        mtype = type(m).__name__
-                        module_types[mtype] = module_types.get(mtype, 0) + 1
-                    
-                    self.log("Module types (top 5):", category="memory")
-                    for mtype, count in sorted(module_types.items(), key=lambda x: x[1], reverse=True)[:5]:
-                        self.log(f"  {mtype}: {count}", category="memory")
-        
-        # Build checkpoint
-        checkpoint = {
-            "label": label,
-            "vram_used_gb": vram_used,
-            "vram_allocated_gb": vram_allocated if torch.cuda.is_available() else 0,
-            "vram_reserved_gb": vram_reserved if torch.cuda.is_available() else 0,
-            "vram_free_gb": vram_free if torch.cuda.is_available() else 0,
-            "ram_process_gb": ram_process_gb,
-            "timestamp": time.time()
-        }
-        
-        # Log the state
-        self.log(f"{label}: {vram_info}{ram_info}{tensor_info}", category="memory")
+            tensor_stats = self._collect_tensor_stats(detailed=detailed_tensors)
+            self.log(f"{tensor_stats['summary']}", category="memory")
         
         # Show diff from last checkpoint
         if show_diff and self.memory_checkpoints:
-            last = self.memory_checkpoints[-1]
-            vram_diff = vram_used - last["vram_used_gb"]
-            ram_diff = ram_process_gb - last.get("ram_process_gb", ram_process_gb)
+            self._log_memory_diff(memory_info)
+
+       # Log detailed analysis if requested
+        if detailed_tensors and tensor_stats.get('details'):
+            self._log_detailed_tensor_analysis(tensor_stats['details'])
+                
+        # Store checkpoint with memory limit
+        self._store_checkpoint(label, memory_info)
+
+        # Reset PyTorch's peak memory stats for next interval
+        reset_vram_peak(debug=self)
+    
+    def _collect_memory_metrics(self) -> Dict[str, Any]:
+        """Collect current memory metrics efficiently."""
+        metrics = {
+            'vram_allocated': 0.0,
+            'vram_reserved': 0.0,
+            'vram_free': 0.0,
+            'vram_total': 0.0,
+            'vram_peak_since_last': 0.0,
+            'ram_process': 0.0,
+            'ram_available': 0.0,
+            'ram_total': 0.0,
+            'ram_others': 0.0,
+            'summary_vram': "",
+            'summary_ram': ""
+        }
+        
+        # VRAM metrics
+        if torch.cuda.is_available() or torch.mps.is_available():
+            metrics['vram_allocated'], metrics['vram_reserved'], current_global_peak = get_vram_usage(debug=self)
             
-            diffs = []
-            if abs(vram_diff) > 0.1:  # Significant VRAM change
-                sign = "+" if vram_diff > 0 else ""
-                diffs.append(f"VRAM {sign}{vram_diff:.2f}GB")
-            if abs(ram_diff) > 0.1:  # Significant RAM change
-                sign = "+" if ram_diff > 0 else ""
-                diffs.append(f"RAM {sign}{ram_diff:.2f}GB")
+            # Calculate peak since last log_memory_state
+            # This captures the actual peak that occurred between calls
+            metrics['vram_peak_since_last'] = current_global_peak
             
-            if diffs:
-                self.log(f"  Memory changes: {', '.join(diffs)}", category="memory")
+            vram_info = get_basic_vram_info()
+            
+            if "error" not in vram_info:
+                metrics['vram_free'] = vram_info["free_gb"]
+                metrics['vram_total'] = vram_info["total_gb"]
+                
+                backend = "MPS" if torch.mps.is_available() else "VRAM"
+                metrics['summary_vram'] = (f"  [{backend}] {metrics['vram_allocated']:.2f}GB allocated / "
+                        f"{metrics['vram_reserved']:.2f}GB reserved / "
+                        f"Peak: {metrics['vram_peak_since_last']:.2f}GB / "
+                        f"{metrics['vram_free']:.2f}GB free / "
+                        f"{metrics['vram_total']:.2f}GB total")
+            else:
+                metrics['summary_vram'] = ""
+        else:
+            metrics['summary_vram'] = ""
+        
+        # RAM metrics using new function
+        metrics['ram_process'], metrics['ram_available'], metrics['ram_total'], metrics['ram_others'] = get_ram_usage(debug=self)
+        
+        if metrics['ram_total'] > 0:
+            metrics['summary_ram'] = (f"  [RAM] {metrics['ram_process']:.2f}GB process / "
+                      f"{metrics['ram_others']:.2f}GB others / "
+                      f"{metrics['ram_available']:.2f}GB free / "
+                      f"{metrics['ram_total']:.2f}GB total")
+        else:
+            metrics['summary_ram'] = ""
+        
+        # Update VRAM history for tracking
+        if torch.cuda.is_available() or torch.mps.is_available():
+            self.vram_history.append(metrics['vram_allocated'])
+        
+        return metrics
+    
+    def _collect_tensor_stats(self, detailed: bool = False) -> Dict[str, Any]:
+        """Collect tensor statistics with minimal overhead."""
+        stats = {
+            'gpu_count': 0,
+            'cpu_count': 0,
+            'total_count': 0,
+            'summary': "",
+            'details': None
+        }
+        
+        if detailed:
+            stats['details'] = {
+                'gpu_tensors': [],
+                'large_cpu_tensors': [],
+                'shape_patterns': {},
+                'module_types': {}
+            }
+        
+        # Single pass through gc objects
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj):
+                    stats['total_count'] += 1
+                    is_gpu = obj.is_cuda or (hasattr(obj, 'is_mps') and obj.is_mps)
+                    
+                    if is_gpu:
+                        stats['gpu_count'] += 1
+                    else:
+                        stats['cpu_count'] += 1
+                    
+                    # Collect detailed info if requested
+                    if detailed and obj.numel() > 0:
+                        size_mb = obj.element_size() * obj.nelement() / (1024**2)
+                        
+                        if is_gpu or size_mb > 10:  # Only track GPU tensors or large CPU tensors
+                            tensor_info = {
+                                'shape': tuple(obj.shape),
+                                'dtype': str(obj.dtype),
+                                'size_mb': size_mb,
+                                'requires_grad': obj.requires_grad
+                            }
+                            
+                            if is_gpu:
+                                stats['details']['gpu_tensors'].append(tensor_info)
+                            elif size_mb > 10:  # Large CPU tensors (>10MB)
+                                stats['details']['large_cpu_tensors'].append(tensor_info)
+                            
+                            # Track shape patterns
+                            shape_key = str(tuple(obj.shape))
+                            stats['details']['shape_patterns'][shape_key] = stats['details']['shape_patterns'].get(shape_key, 0) + 1
+                
+                elif detailed and isinstance(obj, torch.nn.Module):
+                    module_type = type(obj).__name__
+                    stats['details']['module_types'][module_type] = stats['details']['module_types'].get(module_type, 0) + 1
+                        
+            except (ReferenceError, AttributeError):
+                # Object was deleted or doesn't have expected attributes
+                pass
+        
+        stats['summary'] = f"  [Tensors] {stats['gpu_count']} GPU / {stats['cpu_count']} CPU / {stats['total_count']} total"
+        
+        return stats
+    
+    def _log_detailed_tensor_analysis(self, details: Dict[str, Any]) -> None:
+        """Log detailed tensor analysis when requested."""
+        
+        # GPU tensors
+        if details['gpu_tensors']:
+            gpu_total_gb = sum(t['size_mb'] for t in details['gpu_tensors']) / 1024
+            self.log(f"  GPU tensors: {len(details['gpu_tensors'])} using {gpu_total_gb:.2f}GB", category="memory")
+            
+            # Show top 5 largest
+            largest = sorted(details['gpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:5]
+            for t in largest:
+                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+        
+        # Large CPU tensors
+        if details['large_cpu_tensors']:
+            cpu_large_gb = sum(t['size_mb'] for t in details['large_cpu_tensors']) / 1024
+            self.log(f"  Large CPU tensors (>10MB):", category="memory")
+            self.log(f"    {len(details['large_cpu_tensors'])} using {cpu_large_gb:.2f}GB", category="memory")
+            
+            # Show top 3 largest
+            largest = sorted(details['large_cpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:3]
+            for t in largest:
+                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+        
+        # Common shape patterns
+        if details['shape_patterns']:
+            common_shapes = sorted(details['shape_patterns'].items(), 
+                                  key=lambda x: x[1], reverse=True)[:5]
+            if len(common_shapes) > 0:
+                self.log("  Common tensor shapes:", category="memory")
+                for shape, count in common_shapes:
+                    if count > 1:
+                        self.log(f"    {shape}: {count} instances", category="memory")
+        
+        # Module instances
+        if details['module_types']:
+            multi_instance = [(k, v) for k, v in details['module_types'].items() if v > 1]
+            if multi_instance:
+                self.log("  Multiple module instances:", category="memory")
+                for mtype, count in sorted(multi_instance, key=lambda x: x[1], reverse=True)[:5]:
+                    self.log(f"    {mtype}: {count} instances", category="memory")
+    
+    def _log_memory_diff(self, current_metrics: Dict[str, Any]) -> None:
+        """Log memory changes from last checkpoint."""
+        last = self.memory_checkpoints[-1]
+        
+        vram_diff = current_metrics['vram_allocated'] - last.get('vram_allocated', 0)
+        ram_diff = current_metrics['ram_process'] - last.get('ram_process', 0)
+        
+        diffs = []
+        if abs(vram_diff) > 0.01:
+            sign = "+" if vram_diff > 0 else ""
+            diffs.append(f"VRAM {sign}{vram_diff:.2f}GB")
+        if abs(ram_diff) > 0.01:
+            sign = "+" if ram_diff > 0 else ""
+            diffs.append(f"RAM {sign}{ram_diff:.2f}GB")
+        
+        if diffs:
+            self.log(f"  Memory changes: {', '.join(diffs)}", category="memory")
+    
+    def _store_checkpoint(self, label: str, metrics: Dict[str, Any]) -> None:
+        """Store checkpoint with memory limit to prevent leaks."""
+        checkpoint = {
+            'label': label,
+            'timestamp': time.time(),
+            'vram_allocated': metrics['vram_allocated'],
+            'vram_reserved': metrics['vram_reserved'],
+            'vram_free': metrics['vram_free'],
+            'ram_process': metrics['ram_process'],
+            'ram_available': metrics['ram_available'],
+            'ram_others': metrics['ram_others']
+        }
         
         self.memory_checkpoints.append(checkpoint)
+        
+        # Prevent memory leak by limiting checkpoint history
+        if len(self.memory_checkpoints) > self.max_checkpoints:
+            # Keep first and last N/2 checkpoints for better history coverage
+            mid = self.max_checkpoints // 2
+            self.memory_checkpoints = (self.memory_checkpoints[:mid] + 
+                                      self.memory_checkpoints[-mid:])
     
     def log_swap_time(self, component_id: Union[int, str], duration: float, 
                  component_type: str = "block") -> None:
@@ -425,7 +492,7 @@ class Debug:
             if component_type == "block":
                 message = f"Block {component_id} swap: {duration*1000:.1f}ms"
             else:
-                message = f"{component_type.capitalize()} {component_id} swap: {duration*1000:.1f}ms"
+                message = f"{component_type} {component_id} swap: {duration*1000:.1f}ms"
             
             self.log(message, category="blockswap")
     

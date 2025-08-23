@@ -16,10 +16,9 @@ Key Features:
 """
 
 import os
-import time
 import torch
 from src.utils.constants import get_script_directory
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 
 # Import SafeTensors with fallback
 try:
@@ -29,7 +28,7 @@ except ImportError:
     print("⚠️ SafeTensors not available, recommended install: pip install safetensors")
     SAFETENSORS_AVAILABLE = False
 
-from src.optimization.memory_manager import get_basic_vram_info, clear_vram_cache
+from src.optimization.memory_manager import get_basic_vram_info
 from src.optimization.compatibility import FP8CompatibleDiT
 from src.optimization.memory_manager import preinitialize_rope_cache, clear_rope_lru_caches
 from src.common.config import load_config, create_object
@@ -80,17 +79,6 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
         for key, value in runtime_params.items():
             setattr(cached_runner, key, value)
         
-        # Clear RoPE caches before reuse
-        if hasattr(cached_runner, 'dit'):
-            dit_model = cached_runner.dit
-            if hasattr(dit_model, 'dit_model'):
-                dit_model = dit_model.dit_model
-            clear_rope_lru_caches(dit_model)
-        
-        # Clear runner cache to prevent accumulation
-        if hasattr(cached_runner, 'cache') and hasattr(cached_runner.cache, 'cache'):
-            cached_runner.cache.cache.clear()
-        
         debug.log(f"Cache hit: Reusing runner for model {model}", category="reuse", force=True)
         
         # Check if blockswap needs to be applied
@@ -115,14 +103,11 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
                 debug.log("Applying BlockSwap to cached runner", category="blockswap", force=True)
                 apply_block_swap_to_dit(cached_runner, block_swap_config, debug)
                 cached_runner._cached_blockswap_config = block_swap_config.copy() if block_swap_config else None
-            
-            # Store debug instance on runner
-            cached_runner.debug = debug
-            return cached_runner
-        else:
-            # No BlockSwap needed
-            cached_runner.debug = debug
-            return cached_runner
+        
+        # Store debug instance on runner
+        cached_runner.debug = debug
+
+        return cached_runner
         
     else:
         debug.log(f"Cache miss: Creating new runner for model {model}", category="cache", force=True)
@@ -140,7 +125,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
         model_weight = "3b_fp8" if "fp8" in model else "3b_fp16"
     
     config = load_config(config_path)
-    debug.end_timer("config_load", "Config loaded")
+    debug.end_timer("config_load", "Config loading")
     # DiT model configuration is now handled directly in the YAML config files
     # No need for dynamic path resolution here anymore!
 
@@ -154,10 +139,9 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     # Configure VAE parameters
     spatial_downsample_factor = vae_config.get('spatial_downsample_factor', 8)
     temporal_downsample_factor = vae_config.get('temporal_downsample_factor', 4)
-    
     vae_config.spatial_downsample_factor = spatial_downsample_factor
     vae_config.temporal_downsample_factor = temporal_downsample_factor
-    debug.end_timer("vae_config_set", f"VAE downsample factors configured (spatial: {spatial_downsample_factor}x, temporal: {temporal_downsample_factor}x)")
+    debug.end_timer("vae_config_set", f"VAE downsample factors configuration")
     
     # Merge additional VAE config with main config (preserving __object__ from main config)
     debug.start_timer("vae_config_merge")
@@ -170,7 +154,7 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     OmegaConf.set_readonly(runner.config, False)
     # Store model name for cache validation
     runner._model_name = model
-    debug.end_timer("runner_video_infer", "Video diffusion inference runner initialized")
+    debug.end_timer("runner_video_infer", "Video diffusion inference runner initialization")
     
     # Set device
     device = str(get_device())
@@ -182,13 +166,15 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     debug.start_timer("dit_model_infer")
     runner = configure_dit_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config)
 
-    debug.end_timer("dit_model_infer", "DiT model configured")
-    
+    debug.end_timer("dit_model_infer", "DiT model configuration")
+    debug.log_memory_state("After DiT model configuration", detailed_tensors=False)
+
     debug.start_timer("vae_model_infer")
     checkpoint_path = os.path.join(base_cache_dir, f'./{config.vae.checkpoint}')
-    runner = configure_vae_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug)
-
-    debug.end_timer("vae_model_infer", "VAE model configured")
+    runner = configure_vae_model_inference(runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config)
+    debug.log(f"VAE downsample factors configured (spatial: {spatial_downsample_factor}x, temporal: {temporal_downsample_factor}x)", category="vae")
+    debug.end_timer("vae_model_infer", "VAE model configuration")
+    debug.log_memory_state("After VAE model configuration", detailed_tensors=False)
     
     debug.start_timer("vae_memory_limit")
     if hasattr(runner.vae, "set_memory_limit"):
@@ -199,19 +185,18 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     blockswap_active = (
         block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
     )
-    
+
     # Pre-initialize RoPE cache for optimal performance if BlockSwap is NOT active
     if not blockswap_active:
         debug.start_timer("rope_cache_preinit")
-        preinitialize_rope_cache(runner, debug)
-        debug.end_timer("rope_cache_preinit", "RoPE cache pre-initialized")
+        preinitialize_rope_cache(runner=runner, debug=debug)
+        debug.end_timer("rope_cache_preinit", "RoPE cache pre-initialization")
     else:
         debug.log("Skipping RoPE cache pre-initialization (BlockSwap handles RoPE on-demand to save memory)", category="info")
     
     # Apply BlockSwap if configured
     if blockswap_active:
         apply_block_swap_to_dit(runner, block_swap_config, debug)
-    #clear_vram_cache()
     
     # Store debug instance on runner for consistent access
     runner.debug = debug
@@ -279,6 +264,14 @@ def load_quantized_state_dict(checkpoint_path, device="cpu", keep_native_fp8=Tru
     return state
 
 
+def _propagate_debug_to_modules(module, debug):
+    """Propagate debug to specific modules that need it"""
+    for name, submodule in module.named_modules():
+        class_name = submodule.__class__.__name__
+        # Only target the specific modules that actually use debug
+        if class_name in ('ResnetBlock3D', 'Upsample3D', 'InflatedCausalConv3d', 'GroupNorm'):
+            submodule.debug = debug
+
 
 def configure_dit_model_inference(runner, device, checkpoint, config, 
                                  preserve_vram=False, model_weight=None, 
@@ -313,81 +306,83 @@ def configure_dit_model_inference(runner, device, checkpoint, config,
     )
 
     loading_device = "cpu" if (preserve_vram or blockswap_active) else device
-    if blockswap_active:
-        debug.log("Creating DiT model on CPU for BlockSwap (will swap blocks to GPU during inference)", category="model", force=True)
-    else:
-        debug.log(f"Creating DiT model on {loading_device}", category="model")
+    debug.log(f"Creating DiT model on {loading_device}", category="model", force=True)
 
     with torch.device(loading_device):
         runner.dit = create_object(config.dit.model)
 
-    debug.end_timer("dit_model_create", f"DiT model instantiated on {loading_device} - weights not loaded yet")
+    debug.end_timer("dit_model_create", f"DiT model creation")
 
     runner.dit.set_gradient_checkpointing(config.dit.gradient_checkpoint)
 
-    # Detect and log model format
-    debug.log(f"Loading model_weight: {model_weight}", category="model", force=True)
-
-    debug.start_timer("dit_load_state_dict")
-    state_loading_device = "cpu" if "7b" in model_weight and vram_info['total_gb'] < 25 else device
+    # Determine loading device and reason
+    state_loading_device = "cpu" if (preserve_vram or blockswap_active) else device
+    reason = f" ({('preserve_vram' if preserve_vram else 'BlockSwap active')})" if state_loading_device == "cpu" else ""
+    debug.log(f"Loading DiT weights {model_weight} to {state_loading_device}{reason}: {checkpoint}", category="model", force=True)
+    
+    debug.start_timer("dit_weights_load")
     state = load_quantized_state_dict(checkpoint, state_loading_device, keep_native_fp8=True)
+    debug.end_timer("dit_weights_load", "DiT weights loaded from file")
 
-    debug.end_timer("dit_load_state_dict", "DiT state dict loaded")
-    debug.start_timer("dit_load")
+    debug.start_timer("dit_state_apply")
     runner.dit.load_state_dict(state, strict=True, assign=True)
-
     if 'state' in locals():
         del state
-            
-    debug.end_timer("dit_load", "DiT load")
-    #state.to("cpu")
-    #runner.dit = runner.dit.to(device)
+    debug.end_timer("dit_state_apply", "DiT state dict application to model")
+    debug.log_memory_state("After DiT weights loaded", detailed_tensors=False)
 
     # Apply universal compatibility wrapper to ALL models
     # This ensures RoPE compatibility and optimal performance across all architectures
     debug.start_timer("FP8CompatibleDiT")
     # Check if already wrapped to avoid double wrapping
     if not isinstance(runner.dit, FP8CompatibleDiT):
+        debug.log("Applying FP8/RoPE compatibility wrapper to DiT model", category="setup")
         runner.dit = FP8CompatibleDiT(runner.dit, skip_conversion=False, debug=debug)
-    debug.end_timer("FP8CompatibleDiT", "FP8/RoPE compatibility wrapper applied to DiT model")
+    debug.end_timer("FP8CompatibleDiT", "FP8/RoPE compatibility wrapper application")
 
-    # Move DiT to CPU to prevent VRAM leaks (especially for 3B model with complex RoPE)
+    # Move DiT to CPU to prevent VRAM leaks when preserve_vram is enabled
     if preserve_vram and not blockswap_active:
-        debug.log("Moving DiT model to CPU (preserve_vram enabled)", category="memory")
+        debug.log("Moving DiT model to CPU (preserve_vram)", category="general")
         runner.dit = runner.dit.to("cpu")
-        if "7b" in model_weight:
-            clear_vram_cache(debug)
     else:
         if state_loading_device == "cpu" and not blockswap_active:
             runner.dit.to(device)
-
-    # Log BlockSwap status if active
-    if blockswap_active:
-        debug.log(f"BlockSwap active ({block_swap_config.get('blocks_to_swap', 0)} blocks) - placement handled by BlockSwap", category="blockswap")
 
     return runner
 
 
 def configure_vae_model_inference(runner, device, checkpoint_path, config, 
                                  preserve_vram=False, model_weight=None, 
-                                 vram_info=None, debug=None):
+                                 vram_info=None, debug=None, block_swap_config=None):
     """
     Configure VAE model for inference without distributed decorators
     
     Args:
         runner: VideoDiffusionInfer instance  
-        config: Model configuration
         device (str): Target device
+        checkpoint_path (str): Path to VAE checkpoint
+        config: Model configuration
+        preserve_vram (bool): Whether to preserve VRAM by keeping model on CPU
+        model_weight (str): Model weight identifier
+        vram_info (dict): VRAM information dictionary
+        debug: Debug instance for logging
+        block_swap_config (dict): BlockSwap configuration dictionary
         
     Features:
         - Dynamic path resolution for VAE checkpoints
         - SafeTensors and PyTorch format support
         - FP8 and FP16 VAE handling
         - Causal slicing configuration
+        - BlockSwap-aware device placement
     """
     # Check if debug instance is available
     if debug is None:
         raise ValueError("Debug instance must be provided to configure_vae_model_inference")
+    
+    # Check if BlockSwap is active
+    blockswap_active = (
+        block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
+    )
     
     # Create vae model
     if torch.mps.is_available():
@@ -395,46 +390,30 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
         if "fp8_e4m3fn" in runner._model_name:
             config.vae.dtype = "bfloat16"
     
-    dtype = getattr(torch, config.vae.dtype)
+    vae_dtype = getattr(torch, config.vae.dtype)
     debug.start_timer("vae_model_create")
-    loading_device = "cpu" if preserve_vram else device
+    
+    # VAE should be on CPU when preserve_vram is True or BlockSwap is active
+    loading_device = "cpu" if (preserve_vram or blockswap_active) else device
 
-    with torch.device(device):
+    debug.log(f"Creating VAE model on {loading_device} with dtype {vae_dtype}", category="vae", force=True)
+    debug.log("VAE model set to eval mode (gradients disabled)", category="vae")
+
+    with torch.device(loading_device):
         runner.vae = create_object(config.vae.model)
-    debug.end_timer("vae_model_create", f"VAE model created on {device} with dtype {dtype}")
+    debug.end_timer("vae_model_create", f"VAE model creation")
 
     debug.start_timer("model_requires_grad")
     runner.vae.requires_grad_(False).eval()
-    debug.end_timer("model_requires_grad", f"VAE model set to eval mode (gradients disabled)")
+    debug.end_timer("model_requires_grad", "VAE model set to eval mode")
     
-    # t = time.time()
-    #runner.vae.to(device=loading_device, dtype=dtype)
-    #debug.log(f"🔄 CONFIG VAE : TO CPU TIME: {time.time() - t} seconds device: {device} dtype: {dtype}", category="timing")
-    # Resolve VAE checkpoint path dynamically
-    '''
-    checkpoint_path = config.vae.checkpoint
-    
-    possible_paths = [
-        checkpoint_path,  # Original path
-        os.path.join("ComfyUI", checkpoint_path),  # With ComfyUI prefix
-        os.path.join(script_directory, checkpoint_path),  # Relative to script directory
-        os.path.join(script_directory, "..", "..", checkpoint_path),  # From ComfyUI root
-    ]
-    t = time.time()
-    vae_checkpoint_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            vae_checkpoint_path = path
-             debug.log(f"CONFIG VAE : Found VAE checkpoint at: {vae_checkpoint_path}", category="vae")
-            break
-    debug.log(f"CONFIG VAE : VAE CHECKPOINT PATH TIME: {time.time() - t} seconds", category="timing")
-    if vae_checkpoint_path is None:
-        raise FileNotFoundError(f"VAE checkpoint not found. Tried paths: {possible_paths}")
-    '''
     # Load VAE with format detection
-    debug.start_timer("vae_load")
-    state_loading_device = "cpu" if "7b" in model_weight and vram_info['total_gb'] < 25 else device
-    debug.log(f"Loading VAE SafeTensors: {checkpoint_path}", category="vae", force=True)
+    # Determine loading device and reason
+    state_loading_device = "cpu" if (preserve_vram or blockswap_active) else device
+    reason = f" ({('preserve_vram' if preserve_vram else 'BlockSwap active')})" if state_loading_device == "cpu" else ""
+    debug.log(f"Loading VAE weights to {state_loading_device}{reason}: {checkpoint_path}", category="vae", force=True)
+    
+    debug.start_timer("vae_weights_load")
     # Use optimized loading for all SafeTensors formats
     if "fp8_e4m3fn" in checkpoint_path:
         state = load_quantized_state_dict(checkpoint_path, state_loading_device, keep_native_fp8=True)
@@ -442,32 +421,27 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
         # For FP16 SafeTensors, disable native FP8
         state = load_quantized_state_dict(checkpoint_path, state_loading_device, keep_native_fp8=False)
 
-    debug.end_timer("vae_load", "VAE loaded")
-    debug.start_timer("vae_load_state_dict")
+    debug.end_timer("vae_weights_load", "VAE weights loaded from file")
+    debug.start_timer("vae_state_apply")
     runner.vae.load_state_dict(state)
-
-    if torch.mps.is_available():
-        runner.vae = runner.vae.to(dtype=getattr(torch, config.vae.dtype))
     
-    if state_loading_device == "cpu":
-        runner.vae.to(device)
+    # Apply correct dtype after loading weights
+    runner.vae = runner.vae.to(dtype=vae_dtype)
+    
     if 'state' in locals():
         del state
-    debug.end_timer("vae_load_state_dict", "VAE state dict loaded")
+    debug.end_timer("vae_state_apply", "VAE state dict application to model")
+    debug.log_memory_state("After VAE weights loaded", detailed_tensors=False)
 
     # Set causal slicing if available
-    debug.start_timer("vae_set_causal_slicing")
     if hasattr(runner.vae, "set_causal_slicing") and hasattr(config.vae, "slicing"):
+        debug.start_timer("vae_set_causal_slicing")
+        debug.log("Configuring VAE causal slicing for temporal processing", category="vae")
         runner.vae.set_causal_slicing(**config.vae.slicing)
+        debug.end_timer("vae_set_causal_slicing", "VAE causal slicing configuration")
 
-    debug.end_timer("vae_set_causal_slicing", "VAE causal slicing configured")
-
-    # Attach debug to VAE
+    # Attach debug to VAE and propagate to required submodules
     runner.vae.debug = debug
-
-    # Propagate debug to all modules efficiently
-    for module in runner.vae.modules():
-        module.debug = debug
+    _propagate_debug_to_modules(runner.vae, debug)
 
     return runner
-    #runner.vae.to("cpu")

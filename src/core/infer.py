@@ -12,13 +12,12 @@
 # // See the License for the specific language governing permissions and
 # // limitations under the License.
 
-import time
 from typing import List, Optional, Tuple, Union
 import torch
 from einops import rearrange
 from omegaconf import DictConfig, ListConfig
 from torch import Tensor
-from src.optimization.memory_manager import clear_vram_cache
+from src.optimization.memory_manager import clear_memory, manage_model_device
 
 from src.common.diffusion import (
     classifier_free_guidance_dispatcher,
@@ -68,7 +67,7 @@ def optimized_channels_to_second(tensor):
         return tensor.permute(*dims)
 
 class VideoDiffusionInfer():
-    def __init__(self, config: DictConfig, debug=None,  vae_tiling_enabled: bool = False,
+    def __init__(self, config: DictConfig, debug=None,  vae_tiling_enabled: bool = False, 
                  vae_tile_size: Tuple[int, int] = (512, 512), vae_tile_overlap: Tuple[int, int] = (64, 64)):
         # Check if debug instance is available
         if debug is None:
@@ -78,9 +77,6 @@ class VideoDiffusionInfer():
         self.vae_tiling_enabled = vae_tiling_enabled
         self.vae_tile_size = vae_tile_size
         self.vae_tile_overlap = vae_tile_overlap
-
-        # Keep the VAE on the GPU between decode calls
-        self.keep_vae_in_vram: bool = False
         
     def get_condition(self, latent: Tensor, latent_blur: Tensor, task: str) -> Tensor:
         t, h, w, c = latent.shape
@@ -123,6 +119,9 @@ class VideoDiffusionInfer():
             schedule=self.schedule,
             timesteps=self.sampling_timesteps,
         )
+        # Propagate debug to sampler
+        if hasattr(self, 'debug'):
+            self.sampler.debug = self.debug
 
     # -------------------------------- Helper ------------------------------- #
 
@@ -149,7 +148,7 @@ class VideoDiffusionInfer():
 
             use_tiling = (hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled)
             if use_tiling:
-                self.debug.log(f"Using VAE Tiled Encoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
+                self.debug.log(f"Using VAE tiled encoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
 
             # VAE process by each group.
             for sample in batches:
@@ -178,6 +177,8 @@ class VideoDiffusionInfer():
                 latents = na.unpack(latents, indices)
             else:
                 latents = [latent.squeeze(0) for latent in latents]
+            
+            self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
 
         return latents
     
@@ -187,7 +188,6 @@ class VideoDiffusionInfer():
         """🚀 VAE decode optimisé - décodage direct sans chunking, compatible avec autocast externe"""
         samples = []
         if len(latents) > 0:
-            #t = time.time()
             device = get_device()
             dtype = getattr(torch, self.config.vae.dtype)
             scale = self.config.vae.scaling_factor
@@ -206,21 +206,19 @@ class VideoDiffusionInfer():
 
             use_tiling = (hasattr(self, 'vae_tiling_enabled') and self.vae_tiling_enabled)
             if use_tiling:
-                self.debug.log(f"Using VAE Tiled Decoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
+                self.debug.log(f"Using VAE tiled decoding (Tile: {self.vae_tile_size}, Overlap: {self.vae_tile_overlap})", category="vae", force=True)
 
-            self.debug.log(f"Latents batch shape: {latents[0].shape}", category="info")
-            self.debug.start_timer("vae_decode")
-            # If the user wants to keep the VAE resident, do not let the VAE free its buffers
-            internal_preserve_vram = preserve_vram and not getattr(self, 'keep_vae_in_vram', False)
+            self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
+
             for i, latent in enumerate(latents):
                 effective_dtype = target_dtype if target_dtype is not None else dtype
-                latent = latent.to(device, effective_dtype, non_blocking=True)
+                latent = latent.to(device, effective_dtype, non_blocking=False)
                 latent = latent / scale + shift
                 latent = rearrange(latent, "b ... c -> b c ...")
                 latent = latent.squeeze(2)
 
                 sample = self.vae.decode(
-                    latent, preserve_vram=internal_preserve_vram,
+                    latent, preserve_vram=preserve_vram,
                     tiled=use_tiling, tile_size=self.vae_tile_size,
                     tile_overlap=self.vae_tile_overlap).sample
 
@@ -228,8 +226,6 @@ class VideoDiffusionInfer():
                     sample = self.vae.postprocess(sample)
 
                 samples.append(sample)
-
-            self.debug.end_timer("vae_decode", "VAE decode completed")
 
             if self.config.vae.grouping:
                 samples = na.unpack(samples, indices)
@@ -271,30 +267,6 @@ class VideoDiffusionInfer():
         timesteps = timesteps * self.schedule.T
         return timesteps
 
-    def get_vram_usage(self):
-        """Obtenir l'utilisation VRAM actuelle (allouée et réservée)"""
-        if torch.mps.is_available():
-            allocated = torch.mps.current_allocated_memory() / (1024**3)
-            reserved = torch.mps.driver_allocated_memory() / (1024**3)
-            max_allocated = 0
-            return allocated, reserved, max_allocated
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / (1024**3)
-            reserved = torch.cuda.memory_reserved() / (1024**3)
-            max_allocated = torch.cuda.max_memory_allocated() / (1024**3)
-            return allocated, reserved, max_allocated
-        return 0, 0, 0
-
-    def get_vram_peak(self):
-        """Obtenir le pic VRAM depuis le dernier reset"""
-        if torch.cuda.is_available():
-            return torch.cuda.max_memory_allocated() / (1024**3)
-        return 0
-
-    def reset_vram_peak(self):
-        """Reset le compteur de pic VRAM"""
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
 
     @torch.no_grad()
     def inference(
@@ -314,9 +286,6 @@ class VideoDiffusionInfer():
         # Return if empty.
         if batch_size == 0:
             return []
-
-        # Monitoring VRAM initial et reset des pics
-        #self.reset_vram_peak()
         
         # Set cfg scale
         if cfg_scale is None:
@@ -327,9 +296,6 @@ class VideoDiffusionInfer():
         # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
         # - BFloat16 models: Already optimal
         target_dtype = torch.bfloat16
-
-        model_dtype = next(self.dit.parameters()).dtype
-        self.debug.log(f"Model dtype: {model_dtype}, using {target_dtype} for autocast", category="precision")
         
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
@@ -369,18 +335,16 @@ class VideoDiffusionInfer():
 
         
         if preserve_vram:
-            if conditions[0].shape[0] > 1:
-                self.debug.start_timer("vae_to_cpu")
-                self.vae = self.vae.to("cpu")
-                self.debug.end_timer("vae_to_cpu", "VAE to CPU")
             # Before sampling, check if BlockSwap is active
             if not use_blockswap and not hasattr(self, "_blockswap_active"):
-                self.debug.start_timer("dit_to_gpu")
-                self.dit = self.dit.to(get_device())
-                self.debug.end_timer("dit_to_gpu", "DiT to GPU")
-            else:
-                # BlockSwap manages device placement
-                pass
+                manage_model_device(
+                    model=self.dit,
+                    target_device=str(get_device()),
+                    model_name="DiT",
+                    preserve_vram=preserve_vram,
+                    debug=self.debug,
+                    reason="inference requirement"
+                )
 
         self.debug.start_timer("dit_inference")
         
@@ -412,60 +376,51 @@ class VideoDiffusionInfer():
                 ),
             )
         
-        self.debug.end_timer("dit_inference", "DiT inference completed")
+        self.debug.end_timer("dit_inference", "DiT inference")
+        self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
 
         latents = na.unflatten(latents, latents_shapes)
-        #self.debug.log(f"UNFLATTEN time: {time.time() - t} seconds", category="timing")
         
-        # 🎯 Pré-calcul des dtypes (une seule fois)
+        # Pre-calculate dtypes (only once for efficiency)
         vae_dtype = getattr(torch, self.config.vae.dtype)
         decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
-        self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
-        if preserve_vram:
-            self.debug.start_timer("dit_to_cpu")
-            self.dit = self.dit.to("cpu")
+        
+        if preserve_vram and not hasattr(self, "_blockswap_active"):
+            # Move DiT back to CPU
+            manage_model_device(
+                model=self.dit,
+                target_device="cpu",
+                model_name="DiT",
+                preserve_vram=preserve_vram,
+                debug=self.debug,
+                reason="preserve_vram mode"
+            )
+            # Move tensors to CPU as well to free VRAM
             latents_cond = latents_cond.to("cpu")
             latents_shapes = latents_shapes.to("cpu")
+            # Clear memory for larger batches
             if latents[0].shape[0] > 1:
-                clear_vram_cache(self.debug)
-            self.debug.end_timer("dit_to_cpu", "DiT moved to CPU")
+                clear_memory(debug=self.debug, deep=True, force=True)
 
-            if latents[0].shape[0] > 1:
-                self.debug.start_timer("vae_to_gpu")
-                self.vae = self.vae.to(get_device())
-                
-                self.debug.end_timer("vae_to_gpu", "VAE moved to GPU")
-
-
-
-
-        #with torch.autocast("cuda", decode_dtype, enabled=True):
+        # Move VAE to GPU if needed for decoding
+        manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)
+        self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
+        self.debug.log("Decoding latents to samples...", category="vae")
+        self.debug.start_timer("vae_decode")
         samples = self.vae_decode(latents, target_dtype=decode_dtype, preserve_vram=preserve_vram)
-        
+        self.debug.end_timer("vae_decode", "VAE decode")
         self.debug.log(f"Samples shape: {samples[0].shape}", category="vae")
-        #self.debug.log(f"🔄  ULTRA-FAST VAE DECODE time: {time.time() - t} seconds", category="timing")
-        #t = time.time()
-        #self.dit.to(get_device())
-        #self.vae.to("cpu")
-        #self.debug.log(f"🔄 Dit to GPU time: {time.time() - t} seconds", category="timing")
-        #t = time.time()
-        # 🚀 CORRECTION CRITIQUE: Conversion batch Float16 pour ComfyUI (plus rapide)
+        
+        # Move VAE back to CPU after decoding if preserve_vram is enabled
+        if preserve_vram:
+            manage_model_device(model=self.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=self.debug)
+        
+        self.debug.log_memory_state("After VAE decode", detailed_tensors=False)
+        
+        
+        # Converting batch Float16 for ComfyUI (faster)
         if samples and len(samples) > 0 and samples[0].dtype != torch.float16:
             self.debug.log(f"Converting {len(samples)} samples from {samples[0].dtype} to Float16", category="precision")
             samples = [sample.to(torch.float16, non_blocking=True) for sample in samples]
-        
-        #self.debug.log(f"🚀 Conversion batch Float16 time: {time.time() - t} seconds", category="timing")
-        
-        # 🚀 OPTIMISATION: Nettoyage final minimal
-        #t = time.time()
-        #if dit_offload:
-        #    self.vae.to("cpu")
-        #    torch.cuda.empty_cache()
-        #    self.dit.to(get_device())
-        #else:
-            # Garder VAE sur GPU pour les prochains appels
-        #torch.cuda.empty_cache()
-        #self.debug.log(f"🔄 FINAL CLEANUP time: {time.time() - t} seconds", category="timing")
-
-        
+                
         return samples

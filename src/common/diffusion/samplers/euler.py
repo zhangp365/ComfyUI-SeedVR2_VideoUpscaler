@@ -21,6 +21,7 @@ from typing import Callable
 import torch
 from einops import rearrange
 from torch.nn import functional as F
+from src.optimization.memory_manager import clear_memory
 
 #from ....models.dit_v2 import na
 
@@ -71,13 +72,9 @@ class EulerSampler(Sampler):
             
             # Nettoyer les tenseurs temporaires
             del pred
-            if torch.mps.is_available():
-                if torch.mps.is_available():
-                    torch.mps.empty_cache()
-            else:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
+
+            # Clear memory - only when model is configured with sampling step > 1
+            clear_memory(debug=getattr(self, 'debug', None), deep=False, force=True)
             
             i += 1
             progress.update()
