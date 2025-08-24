@@ -622,8 +622,12 @@ def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool
     
     if keep_models_in_ram:
         # 3a. Partial cleanup - move models to CPU but keep structure
-        if hasattr(runner, 'dit'):
+        blockswap_configured = hasattr(runner, '_block_swap_config') and runner._block_swap_config
+        
+        if hasattr(runner, 'dit') and not blockswap_configured:
             manage_model_device(model=runner.dit, target_device='cpu', model_name="DiT", preserve_vram=True, debug=debug, reason="model caching")
+        elif blockswap_configured and debug:
+            debug.log("Skipping DiT movement - BlockSwap configuration preserved", category="general")
         
         if hasattr(runner, 'vae'):
             manage_model_device(model=runner.vae, target_device='cpu', model_name="VAE", preserve_vram=True, debug=debug, reason="model caching")
