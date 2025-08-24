@@ -480,18 +480,18 @@ def _protect_model_from_move(model, runner, debug) -> None:
 
 def cleanup_blockswap(runner, keep_state_for_cache=False):
     """
-    Clean up BlockSwap configuration and restore original model state.
+    Clean up BlockSwap configuration based on caching mode.
     
-    This function ONLY handles BlockSwap-specific cleanup:
-    - Restores wrapped forward methods
-    - Removes BlockSwap attributes
-    - Stores config for potential re-application
+    When caching (keep_state_for_cache=True):
+    - Keep all BlockSwap configuration intact
+    - Only mark as inactive for safety during non-inference operations
     
-    Memory cleanup and model movement is handled by the caller (complete_cleanup).
+    When not caching (keep_state_for_cache=False):
+    - Full cleanup of all BlockSwap state
     
     Args:
         runner: VideoDiffusionInfer instance to clean up
-        keep_state_for_cache: If True, stores configuration for fast re-application
+        keep_state_for_cache: If True, preserve BlockSwap state for reuse
     """
     # Get debug instance from runner
     if not hasattr(runner, 'debug') or runner.debug is None:
@@ -505,21 +505,18 @@ def cleanup_blockswap(runner, keep_state_for_cache=False):
 
     debug.log("Starting BlockSwap cleanup", category="cleanup")
 
+    if keep_state_for_cache:
+        # Minimal cleanup for caching - just mark as inactive
+        # Everything else stays intact for fast reactivation
+        runner._blockswap_active = False
+        debug.log("BlockSwap deactivated for caching (configuration preserved)", category="success")
+        return
+
+    # Full cleanup when not caching
     # Get the actual model (handle FP8CompatibleDiT wrapper)
     model = runner.dit
     if hasattr(model, "dit_model"):
         model = model.dit_model
-
-    # Store configuration BEFORE cleanup if caching
-    if keep_state_for_cache and hasattr(runner, "_block_swap_config"):
-        runner._cached_blockswap_config = {
-            "blocks_to_swap": runner._block_swap_config.get("blocks_swapped"),
-            "offload_io_components": runner._block_swap_config.get("offload_io_components"),
-            "offload_device": runner._block_swap_config.get("offload_device"),
-            "main_device": runner._block_swap_config.get("main_device"),
-            "enable_debug": runner._block_swap_config.get("enable_debug", False),
-        }
-        debug.log("Stored BlockSwap configuration for re-application", category="store")
 
     # 1. Restore block forward methods
     if hasattr(model, 'blocks'):
@@ -577,10 +574,9 @@ def cleanup_blockswap(runner, keep_state_for_cache=False):
     # 6. Clean up runner attributes
     runner._blockswap_active = False
     
-    # Remove config attributes if not caching
-    if not keep_state_for_cache:
-        for attr in ['_cached_blockswap_config', '_block_swap_config', '_blockswap_debug']:
-            if hasattr(runner, attr):
-                delattr(runner, attr)
+    # Remove all config attributes
+    for attr in ['_cached_blockswap_config', '_block_swap_config', '_blockswap_debug']:
+        if hasattr(runner, attr):
+            delattr(runner, attr)
     
     debug.log("BlockSwap cleanup complete", category="success")

@@ -35,6 +35,7 @@ from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
 from src.optimization.blockswap import apply_block_swap_to_dit
 from src.common.distributed import get_device
+from src.optimization.blockswap import cleanup_blockswap
 
 # Get script directory for config paths
 script_directory = get_script_directory()
@@ -84,25 +85,37 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
         # Check if blockswap needs to be applied
         blockswap_needed = block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
 
-        # Sets _blockswap_active for CLI usage
-        if blockswap_needed and not hasattr(cached_runner, "_blockswap_active"):
-            cached_runner._blockswap_active = True
-
         if blockswap_needed:
-            # Check if configuration changed (compare entire dicts)
-            cached_config = getattr(cached_runner, "_cached_blockswap_config", None)
-            config_matches = (cached_config == block_swap_config)
+            # Check if BlockSwap is already configured with same settings
+            cached_config = getattr(cached_runner, "_block_swap_config", None)
+            
+            # Compare only the relevant config fields
+            config_matches = False
+            if cached_config:
+                config_matches = (
+                    cached_config.get("blocks_swapped") == block_swap_config.get("blocks_to_swap") and
+                    cached_config.get("offload_io_components") == block_swap_config.get("offload_io_components", False)
+                )
             
             if config_matches:
-                # Configuration matches - fast re-application
-                debug.log("BlockSwap config matches, performing fast re-application", category="reuse", force=True)
+                # Just reactivate - everything is already configured
                 cached_runner._blockswap_active = True
-                apply_block_swap_to_dit(cached_runner, block_swap_config, debug)
+                debug.log("BlockSwap reactivated with existing configuration", category="reuse", force=True)
             else:
-                # Configuration changed or new - apply config
-                debug.log("Applying BlockSwap to cached runner", category="blockswap", force=True)
+                # Configuration changed or new - need full setup
+                if cached_config:
+                    debug.log("BlockSwap config changed, reconfiguring", category="blockswap", force=True)
+                    # Clean up old configuration first
+                    cleanup_blockswap(cached_runner, keep_state_for_cache=False)
+                else:
+                    debug.log("Applying BlockSwap to cached runner", category="blockswap", force=True)
+                
+                # Apply new configuration
                 apply_block_swap_to_dit(cached_runner, block_swap_config, debug)
-                cached_runner._cached_blockswap_config = block_swap_config.copy() if block_swap_config else None
+        elif hasattr(cached_runner, "_blockswap_active") and cached_runner._blockswap_active:
+            # BlockSwap was active but now disabled - clean it up
+            debug.log("BlockSwap disabled, cleaning up", category="blockswap")
+            cleanup_blockswap(cached_runner, keep_state_for_cache=False)
         
         # Store debug instance on runner
         cached_runner.debug = debug
