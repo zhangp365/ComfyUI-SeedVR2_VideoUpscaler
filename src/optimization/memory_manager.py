@@ -515,6 +515,17 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
     model.to(target_device)
     model.zero_grad(set_to_none=True)
     
+    # Clear VAE memory buffers when moving to CPU
+    if target_type == 'cpu' and model_name == "VAE":
+        cleared_count = 0
+        for module in model.modules():
+            if hasattr(module, 'memory') and module.memory is not None:
+                if torch.is_tensor(module.memory) and (module.memory.is_cuda or module.memory.is_mps):
+                    module.memory = None
+                    cleared_count += 1
+        if cleared_count > 0 and debug:
+            debug.log(f"Cleared {cleared_count} VAE memory buffers", category="success")
+    
     # End timer
     if debug:
         if target_type == 'cpu':
