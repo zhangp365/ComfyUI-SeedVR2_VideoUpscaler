@@ -248,7 +248,7 @@ class SeedVR2:
                 swap_summary = debug.get_swap_summary()
                 if swap_summary and swap_summary.get('total_swaps', 0) > 0:
                     total_time = swap_summary.get('block_total_ms', 0) + swap_summary.get('io_total_ms', 0)
-                    debug.log(f"BlockSwap overhead: {total_time:.1f}ms", category="blockswap")
+                    debug.log(f"BlockSwap overhead: {total_time:.2f}ms", category="blockswap")
                     debug.log(f"  Total swaps: {swap_summary['total_swaps']}", category="blockswap")
                     
                     # Show block swap details
@@ -259,7 +259,7 @@ class SeedVR2:
                         max_ms = swap_summary.get('block_max_ms', 0)
                         
                         debug.log(f"  Block swaps: {swap_summary['block_swaps']} "
-                                f"(avg: {avg_ms:.1f}ms, min: {min_ms:.1f}ms, max: {max_ms:.1f}ms, total: {total_ms:.1f}ms)", 
+                                f"(avg: {avg_ms:.2f}ms, min: {min_ms:.2f}ms, max: {max_ms:.2f}ms, total: {total_ms:.2f}ms)", 
                                 category="blockswap")
                         
                         # Show most frequently swapped block

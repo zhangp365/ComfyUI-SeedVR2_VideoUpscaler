@@ -177,7 +177,7 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
                 should_clear = True
                 if debug:
                     backend = "MPS" if torch.mps.is_available() else "VRAM"
-                    debug.log(f"{backend} pressure: {mem_info['free_gb']:.1f}GB free of {mem_info['total_gb']:.1f}GB", category="memory")
+                    debug.log(f"{backend} pressure: {mem_info['free_gb']:.2f}GB free of {mem_info['total_gb']:.2f}GB", category="memory")
         
         # For non-MPS systems, also check system RAM separately
         if not should_clear and not torch.mps.is_available():
@@ -185,7 +185,7 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
             if mem.available < mem.total * 0.15:
                 should_clear = True
                 if debug:
-                    debug.log(f"RAM pressure: {mem.available/(1024**3):.1f}GB free of {mem.total/(1024**3):.1f}GB", category="memory")
+                    debug.log(f"RAM pressure: {mem.available/(1024**3):.2f}GB free of {mem.total/(1024**3):.2f}GB", category="memory")
         
         if not should_clear:
             return

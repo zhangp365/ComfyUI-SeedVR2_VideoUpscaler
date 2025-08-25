@@ -406,7 +406,7 @@ class Debug:
             # Show top 5 largest
             largest = sorted(details['gpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:5]
             for t in largest:
-                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory")
         
         # Large CPU tensors
         if details['large_cpu_tensors']:
@@ -417,7 +417,7 @@ class Debug:
             # Show top 3 largest
             largest = sorted(details['large_cpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:3]
             for t in largest:
-                self.log(f"    {t['shape']}: {t['size_mb']:.1f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory")
         
         # Common shape patterns
         if details['shape_patterns']:
@@ -490,9 +490,9 @@ class Debug:
             
             # Format message based on component type
             if component_type == "block":
-                message = f"Block {component_id} swap: {duration*1000:.1f}ms"
+                message = f"Block {component_id} swap: {duration*1000:.2f}ms"
             else:
-                message = f"{component_type} {component_id} swap: {duration*1000:.1f}ms"
+                message = f"{component_type} {component_id} swap: {duration*1000:.2f}ms"
             
             self.log(message, category="blockswap")
     
