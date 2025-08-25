@@ -500,7 +500,7 @@ def parse_arguments():
 
 def main():
     """Main CLI function"""
-    debug.log(f"SeedVR2 Video Upscaler CLI started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", category="model", force=True)
+    debug.log(f"SeedVR2 Video Upscaler CLI started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", category="dit", force=True)
     
     # Parse arguments
     args = parse_arguments()

@@ -275,7 +275,7 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
         raise ValueError(f"Debug instance must be provided to configure_{model_type}_model_inference")
     
     is_dit = (model_type == "dit")
-    category = "model" if is_dit else "vae"
+    model_type_upper = "DiT" if is_dit else "VAE"
     
     # Check BlockSwap status (DiT only)
     blockswap_active = (is_dit and block_swap_config and 
@@ -289,63 +289,42 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
             reason = " (BlockSwap active)"
         elif preserve_vram:
             reason = " (preserve_vram)"
-    
-    # VAE-specific dtype configuration
-    model_dtype = None
-    if not is_dit:
-        if torch.mps.is_available():
-            config.vae.dtype = "float16"
-            if "fp8_e4m3fn" in runner._model_name:
-                config.vae.dtype = "bfloat16"
-        model_dtype = getattr(torch, config.vae.dtype)
+    loading_device_upper = loading_device.upper()
     
     # Create model
     model_config = config.dit.model if is_dit else config.vae.model
-    dtype_info = "" if is_dit else f" with dtype {model_dtype}"
-    debug.log(f"Creating {model_type.upper()} model on {loading_device}{dtype_info}", 
-              category=category, force=True)
+    debug.log(f"Creating {model_type_upper} model on {loading_device_upper}", 
+              category=model_type, force=True)
     
     debug.start_timer(f"{model_type}_model_create")
     with torch.device(loading_device):
         model = create_object(model_config)
-    debug.end_timer(f"{model_type}_model_create", f"{model_type.upper()} model creation")
+    debug.end_timer(f"{model_type}_model_create", f"{model_type_upper} model creation")
     
     # VAE-specific eval mode
     if not is_dit:
-        debug.log("VAE model set to eval mode (gradients disabled)", category="vae")
+        debug.log(f"VAE model set to eval mode (gradients disabled)", category=model_type)
         debug.start_timer("model_requires_grad")
         model.requires_grad_(False).eval()
         debug.end_timer("model_requires_grad", "VAE model set to eval mode")
     
     # Load weights
-    debug.log(f"Loading {model_type.upper()} weights to {loading_device}{reason}: {checkpoint_path}", 
-              category=category, force=True)
+    debug.log(f"Loading {model_type_upper} weights to {loading_device_upper}{reason}: {checkpoint_path}", 
+              category=model_type, force=True)
     
     debug.start_timer(f"{model_type}_weights_load")
     state = load_quantized_state_dict(checkpoint_path, loading_device)
-    debug.end_timer(f"{model_type}_weights_load", f"{model_type.upper()} weights loaded from file")
+    debug.end_timer(f"{model_type}_weights_load", f"{model_type_upper} weights loaded from file")
     
     # Apply state dict
     num_params = len(state)
     total_size_mb = sum(p.nelement() * p.element_size() for p in state.values()) / (1024 * 1024)
-    debug.log(f"Applying {model_type.upper()} state dict: {num_params} parameters, {total_size_mb:.2f}MB total", 
-              category=category)
+    debug.log(f"Applying {model_type_upper} state dict: {num_params} parameters, {total_size_mb:.2f}MB total", 
+              category=model_type)
+    
     debug.start_timer(f"{model_type}_state_apply")
-    
     model.load_state_dict(state, strict=True, assign=True)
-    
-    # VAE dtype configuration
-    if not is_dit and model_dtype:
-        current_dtype = next(model.parameters()).dtype
-        if current_dtype != model_dtype:
-            model = model.to(dtype=model_dtype)
-            debug.log(f"VAE converted from {current_dtype} to {model_dtype} successfully", category="vae")
-        else:
-            debug.log(f"VAE state dict applied successfully", category="vae")
-    elif is_dit:
-        debug.log(f"DiT state dict applied successfully", category="model")
-    
-    debug.end_timer(f"{model_type}_state_apply", f"{model_type.upper()} state dict application to model")
+    debug.end_timer(f"{model_type}_state_apply", f"{model_type_upper} state dict application to model")
     
     if 'state' in locals():
         del state
@@ -362,7 +341,7 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
     else:
         # VAE-specific configurations
         if hasattr(model, "set_causal_slicing") and hasattr(config.vae, "slicing"):
-            debug.log("Configuring VAE causal slicing for temporal processing", category="vae")
+            debug.log("Configuring VAE causal slicing for temporal processing", category=model_type)
             debug.start_timer("vae_set_causal_slicing")
             model.set_causal_slicing(**config.vae.slicing)
             debug.end_timer("vae_set_causal_slicing", "VAE causal slicing configuration")

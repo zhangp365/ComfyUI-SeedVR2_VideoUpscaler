@@ -79,7 +79,7 @@ class FP8CompatibleDiT(torch.nn.Module):
         return 'dit_v2' in model_module
         
     def _convert_rope_freqs(self) -> None:
-        """Convert RoPE frequency buffers for FP8 compatibility"""
+        """Convert RoPE frequency buffers from FP8 to BFloat16 for compatibility"""
         converted = 0
         for module in self.dit_model.modules():
             if 'RotaryEmbedding' in type(module).__name__:
@@ -90,7 +90,7 @@ class FP8CompatibleDiT(torch.nn.Module):
                         else:
                             module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
                         converted += 1
-        self.debug.log(f"Converted {converted} RoPE frequency buffers", category="success")
+        self.debug.log(f"Converted {converted} RoPE frequency buffers from FP8 to BFloat16 for compatibility", category="success")
                         
     def _force_nadit_bfloat16(self) -> None:
         """🎯 Force ALL NaDiT parameters to BFloat16 to avoid promotion errors"""
@@ -242,7 +242,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             return True
             
         except Exception as e:
-            self.debug.log(f"Failed to optimize attention layer '{name}': {e}", level="WARNING", category="model", force=True)
+            self.debug.log(f"Failed to optimize attention layer '{name}': {e}", level="WARNING", category="dit", force=True)
             return False
     
     def _create_flash_attention_forward(self, module: torch.nn.Module, layer_name: str):
@@ -255,7 +255,7 @@ class FP8CompatibleDiT(torch.nn.Module):
                 return self._sdpa_attention_forward(original_forward, module, *args, **kwargs)
             except Exception as e:
                 # Fallback to original implementation
-                self.debug.log(f"Flash Attention failed for {layer_name}, using original: {e}", level="WARNING", category="model", force=True)
+                self.debug.log(f"Flash Attention failed for {layer_name}, using original: {e}", level="WARNING", category="dit", force=True)
                 return original_forward(*args, **kwargs)
         
         return flash_attention_forward

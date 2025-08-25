@@ -127,6 +127,7 @@ class VideoDiffusionInfer():
 
     @torch.no_grad()
     def vae_encode(self, samples: List[Tensor], preserve_vram: bool = False) -> List[Tensor]:
+        """VAE encode with configured dtype - converts samples to latents with optional tiling"""
         use_sample = self.config.vae.get("use_sample", True)
         latents = []
         if len(samples) > 0:
@@ -184,8 +185,8 @@ class VideoDiffusionInfer():
     
 
     @torch.no_grad()
-    def vae_decode(self, latents: List[Tensor], target_dtype: torch.dtype = None, preserve_vram: bool = False) -> List[Tensor]:
-        """🚀 VAE decode optimisé - décodage direct sans chunking, compatible avec autocast externe"""
+    def vae_decode(self, latents: List[Tensor], preserve_vram: bool = False) -> List[Tensor]:
+        """VAE decode with configured dtype - converts latents to samples with optional tiling"""
         samples = []
         if len(latents) > 0:
             device = get_device()
@@ -211,8 +212,7 @@ class VideoDiffusionInfer():
             self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
 
             for i, latent in enumerate(latents):
-                effective_dtype = target_dtype if target_dtype is not None else dtype
-                latent = latent.to(device, effective_dtype, non_blocking=False)
+                latent = latent.to(device, dtype, non_blocking=False)
                 latent = latent / scale + shift
                 latent = rearrange(latent, "b ... c -> b c ...")
                 latent = latent.squeeze(2)
@@ -398,16 +398,13 @@ class VideoDiffusionInfer():
         
         self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
 
-        # Pre-calculate dtypes (only once for efficiency)
-        vae_dtype = getattr(torch, self.config.vae.dtype)
-        decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
-
         # Move VAE to GPU if needed for decoding
         manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)
-        self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
+
         self.debug.log("Decoding latents to samples...", category="vae")
         self.debug.start_timer("vae_decode")
-        samples = self.vae_decode(latents, target_dtype=decode_dtype, preserve_vram=preserve_vram)
+        # VAE will use its configured dtype from model_manager
+        samples = self.vae_decode(latents, preserve_vram=preserve_vram)
         self.debug.end_timer("vae_decode", "VAE decode")
         self.debug.log(f"Samples shape: {samples[0].shape}", category="vae")
         

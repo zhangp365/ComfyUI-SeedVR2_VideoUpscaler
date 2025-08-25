@@ -489,27 +489,25 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
     
     # Normalize device strings for comparison
     target_type = target_device.split(':')[0] if ':' in target_device else target_device
-    current_type = str(current_device.type)
+    current_type_upper = str(current_device.type).upper()
+    target_device_upper = target_device.upper()
     
     # Skip if already on target device
-    if current_type == target_type:
+    if current_type_upper == target_device_upper:
         return False
     
     # Determine reason for movement
     if not reason:
         reason = "preserve_vram" if preserve_vram else "inference requirement"
     
+    # Log the movement
+    if debug:
+        debug.log(f"Moving {model_name} from {current_type_upper} to {target_device_upper} ({reason})", category="general")
+
     # Start timer based on direction
     timer_name = f"{model_name.lower()}_to_{'gpu' if target_type != 'cpu' else 'cpu'}"
     if debug:
         debug.start_timer(timer_name)
-    
-    # Log the movement
-    if debug:
-        if target_type == 'cpu':
-            debug.log(f"Moving {model_name} to CPU ({reason})", category="general")
-        else:
-            debug.log(f"Moving {model_name} from {current_type} to {target_device} ({reason})", category="memory")
     
     # Move model and clear gradients
     model.to(target_device)
@@ -528,10 +526,7 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
     
     # End timer
     if debug:
-        if target_type == 'cpu':
-            debug.end_timer(timer_name, f"{model_name} moved to CPU")
-        else:
-            debug.end_timer(timer_name, f"{model_name} moved to GPU")
+        debug.end_timer(timer_name, f"{model_name} moved to {target_device_upper}")
     
     return True
 

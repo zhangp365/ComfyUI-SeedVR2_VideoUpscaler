@@ -34,7 +34,7 @@ class Debug:
         "cleanup": "🧹",      # Cleanup operations
         "setup": "🔧",        # Configuration/setup
         "generation": "🎬",   # Generation process
-        "model": "🚀",        # Model loading/operations
+        "dit": "🚀",        # Model loading/operations
         "blockswap": "🔀",    # BlockSwap operations
         "download": "📥",     # Download operations
         "success": "✅",      # Successful completion
