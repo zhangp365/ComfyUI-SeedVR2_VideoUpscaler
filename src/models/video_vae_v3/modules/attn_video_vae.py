@@ -1070,7 +1070,7 @@ class AutoencoderKL(diffusers.AutoencoderKL):
             self.encoder.mid_block.attentions = torch.nn.ModuleList([None])
             self.decoder.mid_block.attentions = torch.nn.ModuleList([None])
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=True, assign=False):
         # Newer version of diffusers changed the model keys,
         # causing incompatibility with old checkpoints.
         # They provided a method for conversion. We call conversion before loading state_dict.
@@ -1079,7 +1079,7 @@ class AutoencoderKL(diffusers.AutoencoderKL):
         )
         if callable(convert_deprecated_attention_blocks):
             convert_deprecated_attention_blocks(state_dict)
-        return super().load_state_dict(state_dict, strict)
+        return super().load_state_dict(state_dict, strict, assign)
 
 
 class VideoAutoencoderKL(diffusers.AutoencoderKL):
@@ -1544,7 +1544,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             h = self.decode(h.latent_dist.mode())
             return h.sample
 
-    def load_state_dict(self, state_dict, strict=False):
+    def load_state_dict(self, state_dict, strict=False, assign=False):
         # Newer version of diffusers changed the model keys,
         # causing incompatibility with old checkpoints.
         # They provided a method for conversion.
@@ -1554,7 +1554,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         )
         if callable(convert_deprecated_attention_blocks):
             convert_deprecated_attention_blocks(state_dict)
-        return super().load_state_dict(state_dict, strict)
+        return super().load_state_dict(state_dict, strict, assign)
 
 
 class VideoAutoencoderKLWrapper(VideoAutoencoderKL):

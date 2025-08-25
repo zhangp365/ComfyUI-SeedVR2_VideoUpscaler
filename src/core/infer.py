@@ -332,7 +332,6 @@ class VideoDiffusionInfer():
         # Adapter les latents au dtype cible (compatible avec FP8)
         latents = latents.to(target_dtype) if latents.dtype != target_dtype else latents
         latents_cond = latents_cond.to(target_dtype) if latents_cond.dtype != target_dtype else latents_cond
-
         
         if preserve_vram:
             # Before sampling, check if BlockSwap is active
@@ -377,13 +376,8 @@ class VideoDiffusionInfer():
             )
         
         self.debug.end_timer("dit_inference", "DiT inference")
-        self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
 
         latents = na.unflatten(latents, latents_shapes)
-        
-        # Pre-calculate dtypes (only once for efficiency)
-        vae_dtype = getattr(torch, self.config.vae.dtype)
-        decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
         
         if preserve_vram and not hasattr(self, "_blockswap_active"):
             # Move DiT back to CPU
@@ -401,6 +395,12 @@ class VideoDiffusionInfer():
             # Clear memory for larger batches
             if latents[0].shape[0] > 1:
                 clear_memory(debug=self.debug, deep=True, force=True)
+        
+        self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
+
+        # Pre-calculate dtypes (only once for efficiency)
+        vae_dtype = getattr(torch, self.config.vae.dtype)
+        decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
 
         # Move VAE to GPU if needed for decoding
         manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)

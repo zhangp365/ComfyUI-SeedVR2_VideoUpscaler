@@ -436,7 +436,7 @@ def configure_vae_model_inference(runner, device, checkpoint_path, config,
 
     debug.end_timer("vae_weights_load", "VAE weights loaded from file")
     debug.start_timer("vae_state_apply")
-    runner.vae.load_state_dict(state)
+    runner.vae.load_state_dict(state, strict=True, assign=True)
     
     # Apply correct dtype after loading weights
     runner.vae = runner.vae.to(dtype=vae_dtype)
