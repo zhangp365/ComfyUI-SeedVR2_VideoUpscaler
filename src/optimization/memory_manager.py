@@ -506,10 +506,13 @@ def release_model_memory(model: Optional[torch.nn.Module], debug: Optional[Any] 
             debug.log(f"Failed to release model memory: {e}", level="WARNING", category="memory", force=True)
 
 
-def manage_model_device(model, target_device: str, model_name: str = "model",
-                       preserve_vram: bool = False, debug=None, reason: str = None) -> bool:
+def manage_model_device(model: Optional[torch.nn.Module], target_device: str, 
+                       model_name: str = "model", preserve_vram: bool = False, 
+                       debug: Optional[Any] = None, reason: Optional[str] = None,
+                       runner: Optional[Any] = None) -> bool:
     """
     Unified model device management with intelligent movement and logging.
+    Handles BlockSwap-enabled models transparently.
     
     Args:
         model: The model to move
@@ -518,12 +521,22 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
         preserve_vram: Whether preserve_vram mode is active
         debug: Debug instance for logging
         reason: Optional custom reason for the movement
+        runner: Optional runner instance for BlockSwap detection
         
     Returns:
         bool: True if model was moved, False if already on target device
     """
     if model is None:
         return False
+    
+    # Check if this is a BlockSwap-enabled DiT model
+    is_blockswap_model = False
+    actual_model = model
+    if runner and model_name == "DiT" and hasattr(runner, "_blockswap_active") and runner._blockswap_active:
+        is_blockswap_model = True
+        # Get the actual model (handle FP8CompatibleDiT wrapper)
+        if hasattr(model, "dit_model"):
+            actual_model = model.dit_model
     
     # Get current device
     try:
@@ -536,17 +549,159 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
     current_type_upper = str(current_device.type).upper()
     target_device_upper = target_device.upper()
     
-    # Skip if already on target device
-    if current_type_upper == target_device_upper:
+    # Skip if already on target device (unless BlockSwap needs reconfiguration)
+    if current_type_upper == target_device_upper and not is_blockswap_model:
         return False
+        
+    # Handle BlockSwap models specially
+    if is_blockswap_model:
+        return _handle_blockswap_model_movement(
+            runner, actual_model, current_device, target_device, target_type,
+            model_name, debug, reason
+        )
     
+    # Standard model movement (non-BlockSwap)
+    return _standard_model_movement(
+        model, current_device, target_device, target_type, model_name,
+        preserve_vram, debug, reason, target_device_upper
+    )
+
+
+def _handle_blockswap_model_movement(runner: Any, model: torch.nn.Module, 
+                                    current_device: torch.device, target_device: str, 
+                                    target_type: str, model_name: str,
+                                    debug: Optional[Any], reason: Optional[str]) -> bool:
+    """
+    Handle device movement for BlockSwap-enabled models.
+    
+    Args:
+        runner: Runner instance with BlockSwap configuration
+        model: Model to move (actual unwrapped model)
+        current_device: Current device of the model
+        target_device: Target device string
+        target_type: Target device type (cpu/cuda)
+        model_name: Model name for logging
+        debug: Debug instance
+        reason: Movement reason
+        
+    Returns:
+        bool: True if model was moved
+    """
+    # Import BlockSwap function (avoid circular import)
+    from src.optimization.blockswap import set_blockswap_bypass
+    
+    if target_type == "cpu":
+        # Moving to CPU (offload)
+        if debug:
+            current_device_str = str(current_device).upper()
+            debug.log(f"Moving {model_name} from {current_device_str} to {target_device.upper()} ({reason or 'preserve_vram'})", category="general")
+        
+        # Enable bypass to allow movement
+        set_blockswap_bypass(runner=runner, bypass=True, debug=debug)
+        
+        # Start timer
+        timer_name = f"{model_name.lower()}_to_cpu"
+        if debug:
+            debug.start_timer(timer_name)
+        
+        # Move entire model to CPU
+        model.to("cpu")
+        model.zero_grad(set_to_none=True)
+        
+        if debug:
+            debug.end_timer(timer_name, "BlockSwap model offloaded to CPU")
+        
+        return True
+        
+    else:
+        # Moving to GPU (reload)
+        # Check if we're in bypass mode (coming from preserve_vram offload)
+        if not getattr(runner, "_blockswap_bypass_protection", False):
+            # Not in bypass mode, blocks are already configured
+            return False
+        
+        if debug:
+            debug.log(f"Moving DiT from CPU to {target_device.upper()} ({reason or 'inference requirement'})", category="general")
+        
+        timer_name = f"{model_name.lower()}_to_gpu"
+        if debug:
+            debug.start_timer(timer_name)
+        
+        # Restore blocks to their configured devices
+        if hasattr(model, "blocks") and hasattr(model, "blocks_to_swap"):
+            device = str(target_device)
+            
+            # Move blocks according to BlockSwap configuration
+            for b, block in enumerate(model.blocks):
+                if b > model.blocks_to_swap:
+                    # This block should be on GPU
+                    block.to(device)
+                else:
+                    # This block stays on CPU (will be swapped during forward)
+                    block.to("cpu")
+            
+            # Handle I/O components
+            if not runner._block_swap_config.get("offload_io_components", False):
+                # I/O components should be on GPU if not offloaded
+                for name, module in model.named_children():
+                    if name != "blocks":
+                        module.to(device)
+            else:
+                # I/O components stay on CPU (will be swapped during forward)
+                for name, module in model.named_children():
+                    if name != "blocks":
+                        module.to("cpu")
+            
+            if debug:
+                # Get actual configuration from runner
+                if hasattr(runner, '_block_swap_config'):
+                    blocks_on_gpu = runner._block_swap_config.get('total_blocks', 32) - runner._block_swap_config.get('blocks_swapped', 16)
+                    total_blocks = runner._block_swap_config.get('total_blocks', 32)
+                    main_device = runner._block_swap_config.get('main_device', 'GPU')
+                    debug.log(f"BlockSwap blocks restored to configured devices ({blocks_on_gpu}/{total_blocks} blocks on {main_device.upper()})", category="success")
+                else:
+                    debug.log("BlockSwap blocks restored to configured devices", category="success")
+
+        
+        # Disable bypass, re-enable protection
+        set_blockswap_bypass(runner=runner, bypass=False, debug=debug)
+        
+        if debug:
+            debug.end_timer(timer_name, "BlockSwap model restored")
+        
+        return True
+
+
+def _standard_model_movement(model: torch.nn.Module, current_device: torch.device,
+                            target_device: str, target_type: str,
+                            model_name: str, preserve_vram: bool, 
+                            debug: Optional[Any], reason: Optional[str],
+                            target_device_upper: str) -> bool:
+    """
+    Handle standard (non-BlockSwap) model movement.
+    
+    Args:
+        model: Model to move
+        current_device: Current device of the model
+        target_device: Target device string
+        target_type: Target device type
+        model_name: Model name for logging
+        preserve_vram: Whether in preserve_vram mode
+        debug: Debug instance
+        reason: Movement reason
+        target_device_upper: Target device type (uppercase)
+        
+    Returns:
+        bool: True if model was moved
+    """
     # Determine reason for movement
     if not reason:
         reason = "preserve_vram" if preserve_vram else "inference requirement"
     
-    # Log the movement
+    # Log the movement with full device strings
     if debug:
-        debug.log(f"Moving {model_name} from {current_type_upper} to {target_device_upper} ({reason})", category="general")
+        current_device_str = str(current_device).upper()
+        debug.log(f"Moving {model_name} from {current_device_str} to {target_device_upper} ({reason})", category="general")
 
     # Start timer based on direction
     timer_name = f"{model_name.lower()}_to_{'gpu' if target_type != 'cpu' else 'cpu'}"
@@ -665,7 +820,7 @@ def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool
     if hasattr(runner, "_blockswap_active") and runner._blockswap_active:
         # Import here to avoid circular dependency
         from src.optimization.blockswap import cleanup_blockswap
-        cleanup_blockswap(runner, keep_state_for_cache=keep_models_in_ram)
+        cleanup_blockswap(runner=runner, keep_state_for_cache=keep_models_in_ram)
     
     # 2. Clear all runtime caches
     clear_runtime_caches(runner=runner, debug=debug)

@@ -316,16 +316,16 @@ class VideoDiffusionInfer():
         latents_cond, _ = na.flatten(conditions)
         
         if preserve_vram:
-            # Before sampling, check if BlockSwap is active
-            if not use_blockswap and not hasattr(self, "_blockswap_active"):
-                manage_model_device(
-                    model=self.dit,
-                    target_device=str(get_device()),
-                    model_name="DiT",
-                    preserve_vram=preserve_vram,
-                    debug=self.debug,
-                    reason="inference requirement"
-                )
+            # Move model to GPU for inference
+            manage_model_device(
+                model=self.dit,
+                target_device=str(get_device()),
+                model_name="DiT",
+                preserve_vram=preserve_vram,
+                debug=self.debug,
+                reason="inference requirement",
+                runner=self
+            )
 
         self.debug.start_timer("dit_inference")
         
@@ -360,15 +360,16 @@ class VideoDiffusionInfer():
 
         latents = na.unflatten(latents, latents_shapes)
         
-        if preserve_vram and not hasattr(self, "_blockswap_active"):
-            # Move DiT back to CPU
+        if preserve_vram:
+            # Move DiT back to CPU (preserve_vram)
             manage_model_device(
                 model=self.dit,
                 target_device="cpu",
                 model_name="DiT",
                 preserve_vram=preserve_vram,
                 debug=self.debug,
-                reason="preserve_vram mode"
+                reason="preserve_vram",
+                runner=self
             )
             # Move tensors to CPU as well to free VRAM
             latents_cond = latents_cond.to("cpu")
