@@ -235,7 +235,6 @@ class SeedVR2:
         sample = generation_loop(
             self.runner, images, cfg_scale, seed, new_resolution, 
             batch_size, preserve_vram, temporal_overlap, debug,
-            block_swap_config=block_swap_config,
             progress_callback=self._progress_callback
         )
         

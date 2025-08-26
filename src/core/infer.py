@@ -290,12 +290,6 @@ class VideoDiffusionInfer():
         # Set cfg scale
         if cfg_scale is None:
             cfg_scale = self.config.diffusion.cfg.scale
-
-        # 🚀 OPTIMISATION: Use BFloat16 autocast for all models
-        # - FP8 models: BFloat16 required for arithmetic operations
-        # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
-        # - BFloat16 models: Already optimal
-        target_dtype = torch.bfloat16
         
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
@@ -316,22 +310,10 @@ class VideoDiffusionInfer():
         else:
             text_pos_embeds, text_pos_shapes = na.flatten(texts_pos)
             text_neg_embeds, text_neg_shapes = na.flatten(texts_neg)
-
-        # Adapter les embeddings texte au dtype cible (compatible avec FP8)
-        if isinstance(text_pos_embeds, torch.Tensor):
-            text_pos_embeds = text_pos_embeds.to(target_dtype)
-        if isinstance(text_neg_embeds, torch.Tensor):
-            text_neg_embeds = text_neg_embeds.to(target_dtype)
-        
-        self.debug.log(f"Text embeddings adapted to precision: {target_dtype}", category="precision")
         
         # Flatten.
         latents, latents_shapes = na.flatten(noises)
         latents_cond, _ = na.flatten(conditions)
-
-        # Adapter les latents au dtype cible (compatible avec FP8)
-        latents = latents.to(target_dtype) if latents.dtype != target_dtype else latents
-        latents_cond = latents_cond.to(target_dtype) if latents_cond.dtype != target_dtype else latents_cond
         
         if preserve_vram:
             # Before sampling, check if BlockSwap is active
@@ -347,33 +329,32 @@ class VideoDiffusionInfer():
 
         self.debug.start_timer("dit_inference")
         
-        with torch.autocast(str(get_device()), target_dtype, enabled=True):
-            latents = self.sampler.sample(
-                x=latents,
-                f=lambda args: classifier_free_guidance_dispatcher(
-                    pos=lambda: self.dit(
-                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                        txt=text_pos_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_pos_shapes,
-                        timestep=args.t.repeat(batch_size),
-                    ).vid_sample,
-                    neg=lambda: self.dit(
-                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                        txt=text_neg_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_neg_shapes,
-                        timestep=args.t.repeat(batch_size),
-                    ).vid_sample,
-                    scale=(
-                        cfg_scale
-                        if (args.i + 1) / len(self.sampler.timesteps)
-                        <= self.config.diffusion.cfg.get("partial", 1)
-                        else 1.0
-                    ),
-                    rescale=self.config.diffusion.cfg.rescale,
+        latents = self.sampler.sample(
+            x=latents,
+            f=lambda args: classifier_free_guidance_dispatcher(
+                pos=lambda: self.dit(
+                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                    txt=text_pos_embeds,
+                    vid_shape=latents_shapes,
+                    txt_shape=text_pos_shapes,
+                    timestep=args.t.repeat(batch_size),
+                ).vid_sample,
+                neg=lambda: self.dit(
+                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                    txt=text_neg_embeds,
+                    vid_shape=latents_shapes,
+                    txt_shape=text_neg_shapes,
+                    timestep=args.t.repeat(batch_size),
+                ).vid_sample,
+                scale=(
+                    cfg_scale
+                    if (args.i + 1) / len(self.sampler.timesteps)
+                    <= self.config.diffusion.cfg.get("partial", 1)
+                    else 1.0
                 ),
-            )
+                rescale=self.config.diffusion.cfg.rescale,
+            ),
+        )
         
         self.debug.end_timer("dit_inference", "DiT inference")
 
@@ -413,7 +394,6 @@ class VideoDiffusionInfer():
             manage_model_device(model=self.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=self.debug)
         
         self.debug.log_memory_state("After VAE decode", detailed_tensors=False)
-        
         
         # Converting batch Float16 for ComfyUI (faster)
         if samples and len(samples) > 0 and samples[0].dtype != torch.float16:

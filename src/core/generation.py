@@ -132,7 +132,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
         # Restore timesteps to GPU if they were offloaded
         if preserve_vram and hasattr(runner, 'sampling_timesteps') and hasattr(runner.sampling_timesteps, 'timesteps'):
             if not runner.sampling_timesteps.timesteps.is_cuda:
-                debug.log("Moving timesteps tensor to GPU (inference requirement)", category="general")
+                debug.log(f"Moving timesteps tensor to {str(device).upper()} (inference requirement)", category="general")
                 debug.start_timer("timesteps_to_gpu")
                 runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.to(device, non_blocking=False)
                 debug.end_timer("timesteps_to_gpu", "Sampling timesteps restored to GPU")
@@ -202,7 +202,7 @@ def cut_videos(videos):
 
 def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, 
                    preserve_vram=False, temporal_overlap=0, debug=None, 
-                   block_swap_config=None, progress_callback=None):
+                   progress_callback=None):
     """
     Main generation loop with context-aware temporal processing
     
@@ -216,7 +216,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         preserve_vram (str/bool): VRAM preservation mode
         temporal_overlap (int): Frames for temporal continuity
         debug (bool): Debug mode
-        block_swap_config (dict): Optional BlockSwap configuration
         progress_callback (callable): Optional callback for progress reporting
         
     Returns:
@@ -251,8 +250,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         dit_dtype = next(runner.dit.parameters()).dtype
         vae_dtype = next(runner.vae.parameters()).dtype
         
+        # FP8 models: BFloat16 required for arithmetic operations
         if dit_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-            # For FP8, use BFloat16 for intermediate calculations (compatible)
             compute_dtype = torch.bfloat16
             autocast_dtype = torch.bfloat16
         elif dit_dtype == torch.float16:
@@ -301,7 +300,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     # Load text embeddings on selected device with adaptive dtype
     loading_device = "cpu" if preserve_vram else device
     reason = " (preserve_vram)" if loading_device == "cpu" and preserve_vram else ""
-    debug.log(f"Loading text embeddings to {loading_device.upper()}{reason}", category="general")
+    debug.log(f"Loading text embeddings to {str(loading_device).upper()}{reason}", category="general")
     debug.start_timer("text_embeddings_load")
     text_pos_embeds = torch.load(os.path.join(script_directory, 'pos_emb.pt')).to(loading_device, dtype=compute_dtype)
     text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(loading_device, dtype=compute_dtype)
@@ -423,7 +422,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 # Move text embeddings back to GPU if they were offloaded when preserve_vram is enabled
                 if preserve_vram:
                     if text_pos_embeds.device.type == "cpu":
-                        debug.log(f"Moving text embeddings to GPU (inference requirement)", category="general")
+                        debug.log(f"Moving text embeddings to {str(device).upper()} (inference requirement)", category="general")
                         debug.start_timer("text_embeddings_to_gpu")
                         text_pos_embeds = text_pos_embeds.to(device, dtype=compute_dtype)
                         text_neg_embeds = text_neg_embeds.to(device, dtype=compute_dtype)
