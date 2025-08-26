@@ -52,7 +52,7 @@ from .types import (
     _memory_device_t,
     _receptive_field_t,
 )
-from src.optimization.memory_manager import clear_memory
+from src.optimization.memory_manager import clear_memory, retry_on_oom
 
 logger = get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -134,28 +134,21 @@ class Upsample3D(Upsample2D):
             hidden_states = [hidden_states]
 
         for i in range(len(hidden_states)):
-            # OOM recovery attempt
-            try:
-                hidden_states[i] = self.upscale_conv(hidden_states[i])
-                hidden_states[i] = rearrange(
-                    hidden_states[i],
+            def upscale_and_rearrange():
+                temp = self.upscale_conv(hidden_states[i])
+                return rearrange(
+                    temp,
                     "b (x y z c) f h w -> b c (f z) (h x) (w y)",
                     x=self.spatial_ratio,
                     y=self.spatial_ratio,
                     z=self.temporal_ratio,
                 )
-            except Exception as e:
-                self.debug.log(f"OOM - Clearing memory and retrying: Upsample3D upscale_conv: {e}", level="WARNING", category="memory", force=True)
-                clear_memory(debug=self.debug, deep=True, force=True)
-                time.sleep(1)
-                hidden_states[i] = self.upscale_conv(hidden_states[i])
-                hidden_states[i] = rearrange(
-                    hidden_states[i],
-                    "b (x y z c) f h w -> b c (f z) (h x) (w y)",
-                    x=self.spatial_ratio,
-                    y=self.spatial_ratio,
-                    z=self.temporal_ratio,
-                )
+            
+            hidden_states[i] = retry_on_oom(
+                upscale_and_rearrange,
+                debug=getattr(self, 'debug', None),
+                operation_name="Upsample3D.upscale_conv"
+            )
 
         # [Overridden] For causal temporal conv
         if self.temporal_up and memory_state != MemoryState.ACTIVE:
@@ -165,20 +158,17 @@ class Upsample3D(Upsample2D):
             hidden_states = hidden_states[0]
 
         if self.use_conv:
-            # OOM recovery attempt
-            try:
+            def apply_conv():
                 if self.name == "conv":
-                    hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
+                    return self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
                 else:
-                    hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
-            except Exception as e:
-                self.debug.log(f"OOM - Clearing memory and retrying: Upsample3D conv: {e}", level="WARNING", category="memory", force=True)
-                clear_memory(debug=self.debug, deep=True, force=True)
-                time.sleep(1)
-                if self.name == "conv":
-                    hidden_states = self.conv(hidden_states, memory_state=memory_state, preserve_vram=preserve_vram)
-                else:
-                    hidden_states = self.Conv2d_0(hidden_states, memory_state=memory_state)
+                    return self.Conv2d_0(hidden_states, memory_state=memory_state)
+            
+            hidden_states = retry_on_oom(
+                apply_conv,
+                debug=getattr(self, 'debug', None),
+                operation_name="Upsample3D.conv"
+            )
 
         if not self.slicing:
             return hidden_states
@@ -326,14 +316,12 @@ class ResnetBlock3D(ResnetBlock2D):
         hidden_states = input_tensor
 
         hidden_states = causal_norm_wrapper(self.norm1, hidden_states, preserve_vram=preserve_vram)
-        # OOM recovery attempt
-        try:
-            hidden_states = self.nonlinearity(hidden_states)
-        except Exception as e:
-            self.debug.log(f"OOM - Clearing memory and retrying: ResnetBlock3D: {e}", level="WARNING", category="memory", force=True)
-            clear_memory(debug=self.debug, deep=True, force=True)
-            time.sleep(1) 
-            hidden_states = self.nonlinearity(hidden_states) 
+        hidden_states = retry_on_oom(
+            self.nonlinearity,
+            hidden_states,
+            debug=getattr(self, 'debug', None),
+            operation_name="ResnetBlock3D.nonlinearity"
+        )
 
         if self.upsample is not None:
             # upsample_nearest_nhwc fails with large batch sizes.

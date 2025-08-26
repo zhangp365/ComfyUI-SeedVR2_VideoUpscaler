@@ -263,6 +263,50 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
         debug.end_timer("memory_clear", "clear_memory() completion")
 
 
+def retry_on_oom(func, *args, debug=None, operation_name="operation", **kwargs):
+    """
+    Execute function with single OOM retry after memory cleanup.
+    
+    Args:
+        func: Callable to execute
+        *args: Positional arguments for func
+        debug: Debug instance for logging (optional)
+        operation_name: Name for logging
+        **kwargs: Keyword arguments for func
+    
+    Returns:
+        Result of func(*args, **kwargs)
+    """
+    try:
+        return func(*args, **kwargs)
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        # Only handle OOM errors
+        if not any(x in str(e).lower() for x in ["out of memory", "allocation on device"]):
+            raise
+        
+        if debug:
+            debug.log(f"OOM during {operation_name}: {e}", level="WARNING", category="memory", force=True)
+            debug.log(f"Clearing memory and retrying", category="cleanup", force=True)
+        
+        # Clear memory
+        clear_memory(debug=debug, deep=True, force=True)
+        # Let memory settle
+        time.sleep(0.5)
+
+        debug.log_memory_state("After memory clearing", detailed_tensors=False)
+        
+        # Single retry
+        try:
+            result = func(*args, **kwargs)
+            if debug:
+                debug.log(f"Retry successful for {operation_name}", category="success", force=True)
+            return result
+        except Exception as retry_e:
+            if debug:
+                debug.log(f"Retry failed for {operation_name}: {retry_e}", level="ERROR", category="memory", force=True)
+            raise
+
+
 def reset_vram_peak(debug: Optional[Any]) -> None:
     """
     Reset VRAM peak memory statistics for fresh tracking.

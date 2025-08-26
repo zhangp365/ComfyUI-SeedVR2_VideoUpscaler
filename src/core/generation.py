@@ -250,13 +250,16 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         dit_dtype = next(runner.dit.parameters()).dtype
         vae_dtype = next(runner.vae.parameters()).dtype
         
-        # FP8 models: BFloat16 required for arithmetic operations
+        # Use BFloat16 for all models
+        # - FP8 models: BFloat16 required for arithmetic operations
+        # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
+        # - BFloat16 models: Already optimal
         if dit_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             compute_dtype = torch.bfloat16
             autocast_dtype = torch.bfloat16
         elif dit_dtype == torch.float16:
-            compute_dtype = torch.float16
-            autocast_dtype = torch.float16
+            compute_dtype = torch.bfloat16
+            autocast_dtype = torch.bfloat16
         else:  # BFloat16 or others
             compute_dtype = torch.bfloat16
             autocast_dtype = torch.bfloat16
@@ -394,9 +397,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 
                 
                 if len(images) >= 5 and t % 4 != 1:
-                    debug.log(f"Transformed video shape before cut: {transformed_video.shape}", category="video")
+                    debug.log(f"Video frames before padding: {transformed_video.shape[1]} frames (shape: {transformed_video.shape})", category="video")
+                    debug.log("Applying frame padding to satisfy model constraint (frames % 4 == 1)", category="info")
                     transformed_video = cut_videos(transformed_video)
-                    debug.log(f"Transformed video shape: {transformed_video.shape}", category="video")
+                    debug.log(f"Video frames after padding: {transformed_video.shape[1]} frames (shape: {transformed_video.shape})", category="video")
                 
                 # Context-aware temporal strategy
                 # First batch: standard complete diffusion
