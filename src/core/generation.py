@@ -331,7 +331,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     # ───────────────────────────────────────────────────────────────
     # Step 2: Batch Processing
     # ───────────────────────────────────────────────────────────────
-    debug.log("\n━━━━━━━━━ Step 2: Batch Processing ━━━━━━━━━", category="none")
+    debug.log("", category="none")
+    debug.log("━━━━━━━━━ Step 2: Batch Processing ━━━━━━━━━", category="none")
     debug.start_timer("batch_processing")
     
     # Standard processing (non-TileVAE) continues below
@@ -529,7 +530,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     # ───────────────────────────────────────────────────────────────
     # Step 3: Final Post-processing & Memory Optimization
     # ───────────────────────────────────────────────────────────────
-    debug.log("\n━━━━━━━━━ Step 3: Final Post-processing ━━━━━━━━━", category="none")
+    debug.log("", category="none", force=True)
+    debug.log("━━━━━━━━━ Step 3: Final Post-processing ━━━━━━━━━", category="none")
     debug.start_timer("post_processing")
     
     # OPTIMISATION ULTIME : Pré-allocation et copie directe (évite les torch.cat multiples)

@@ -128,9 +128,9 @@ class SeedVR2:
         if vae_tile_overlap >= vae_tile_size:
             raise ValueError(f"VAE tile overlap ({vae_tile_overlap}) must be less than tile size ({vae_tile_size})")
 
-        # Initialize or reuse debug instance
+        # Initialize or reuse debug instance based on enable_debug parameter with timestamps
         if self.debug is None:
-            self.debug = Debug(enabled=enable_debug)
+            self.debug = Debug(enabled=enable_debug, show_timestamps=enable_debug)
         else:
             self.debug.enabled = enable_debug
         
@@ -190,7 +190,7 @@ class SeedVR2:
         debug = self.debug
         
         debug.start_timer("total_execution")
-        debug.log("\n━━━━━━━━━ Model Preparation ━━━━━━━━━", category="none")
+        debug.log("━━━━━━━━━ Model Preparation ━━━━━━━━━", category="none")
 
         # Initial memory state
         debug.log_memory_state("Before model preparation", detailed_tensors=False)
@@ -228,7 +228,8 @@ class SeedVR2:
         debug.end_timer("model_preparation", "Model preparation", force=True, show_breakdown=True)
 
         debug.log("", category="none", force=True)
-        debug.log("Starting video upscaling generation...\n", category="generation", force=True)
+        debug.log("Starting video upscaling generation...", category="generation", force=True)
+        debug.log("", category="none", force=True)
         debug.start_timer("generation_loop")
 
         # Execute generation with debug
@@ -269,7 +270,8 @@ class SeedVR2:
         debug.end_timer("generation_loop", "Video generation", show_breakdown=True)
         debug.log_memory_state("After video generation", detailed_tensors=False)
        
-        debug.log("\n━━━━━━━━━ Final Cleanup ━━━━━━━━━", category="none")
+        debug.log("", category="none")
+        debug.log("━━━━━━━━━ Final Cleanup ━━━━━━━━━", category="none")
         debug.start_timer("final_cleanup")
         
         # Perform cleanup (this already calls clear_memory internally)
@@ -284,7 +286,8 @@ class SeedVR2:
         debug.log_memory_state("After final cleanup", detailed_tensors=False)
         
         # Final timing summary
-        debug.log("\n━━━━━━━━━━━━━━━━━━", category="none")
+        debug.log("", category="none")
+        debug.log("━━━━━━━━━━━━━━━━━━", category="none")
         child_times = {
             "Model preparation": debug.timer_durations.get("model_preparation", 0),
             "Video generation": debug.timer_durations.get("generation_loop", 0),

@@ -9,6 +9,7 @@ import time
 import torch
 import gc
 from typing import Optional, List, Dict, Any, Union
+from datetime import datetime
 from src.optimization.memory_manager import get_vram_usage, get_basic_vram_info, get_ram_usage, reset_vram_peak
 from contextlib import contextmanager
 
@@ -23,6 +24,8 @@ class Debug:
     - Timing utilities
     - BlockSwap operation tracking
     - Minimal overhead when disabled
+    - Timestamped logs for better troubleshooting
+    - Force parameters for critical logs
     """
     
     # Icon mapping for different categories
@@ -53,8 +56,10 @@ class Debug:
         "none" : "",
     }
     
-    def __init__(self, enabled: bool = False):
+    
+    def __init__(self, enabled: bool = False, show_timestamps: bool = True):
         self.enabled = enabled
+        self.show_timestamps = show_timestamps
         self.timers: Dict[str, float] = {}
         self.memory_checkpoints: List[Dict[str, Any]] = []
         self.max_checkpoints = 100
@@ -64,20 +69,20 @@ class Debug:
         self.swap_times: List[Dict[str, Any]] = []
         self.vram_history: List[float] = []
         self.active_timer_stack: List[str] = [] 
-        self.timer_namespace: str = "" 
+        self.timer_namespace: str = ""
         
+
     def log(self, message: str, level: str = "INFO", category: str = "general", force: bool = False) -> None:
         """
-        Log a categorized message
+        Log a categorized message with optional timestamp
         
         Args:
             message: Message to log
             level: Log level (INFO, WARN, ERROR)
             category: Category for the message
-            force: If True, always log regardless of enabled state (for generic messages)
+            force: If True, always log regardless of enabled state (for critical messages)
         """
-        # Always log forced messages (generic messages that were previously print statements)
-        # or log if debugging is enabled
+        # Always log forced messages or if debugging is enabled
         if force or self.enabled:
             # Get icon for category, fallback to general icon
             icon = self.CATEGORY_ICONS.get(category, self.CATEGORY_ICONS["general"])
@@ -88,13 +93,19 @@ class Debug:
             elif level == "ERROR":
                 icon = self.CATEGORY_ICONS["error"]
             
-            # Build the log message
-            prefix = f"{icon}"
+            # Build the log message with optional timestamp
+            if self.show_timestamps and self.enabled:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                prefix = f"[{timestamp}] {icon}"
+            else:
+                prefix = f"{icon}"
+            
             if level != "INFO":
                 prefix += f" [{level}]"
             
             print(f"{prefix} {message}")
     
+
     @contextmanager
     def timer_context(self, namespace: str):
         """
@@ -112,6 +123,7 @@ class Debug:
         finally:
             self.timer_namespace = old_namespace
             
+
     def start_timer(self, name: str, force: bool = False) -> None:
         """
         Start a named timer
@@ -139,6 +151,7 @@ class Debug:
             # Push to stack
             self.active_timer_stack.append(name)
     
+
     def end_timer(self, name: str, message: Optional[str] = None, 
               force: bool = False, show_breakdown: bool = False,
               custom_children: Optional[Dict[str, float]] = None) -> float:
@@ -227,8 +240,9 @@ class Debug:
         
         return duration
 
+
     def log_memory_state(self, label: str, show_diff: bool = True, show_tensors: bool = True, 
-                        detailed_tensors: bool = False) -> None:
+                        detailed_tensors: bool = False, force: bool = False) -> None:
         """
         Log current memory state with minimal overhead.
         
@@ -237,36 +251,37 @@ class Debug:
             show_diff: Show change from last checkpoint
             show_tensors: Include tensor counts
             detailed_tensors: Show detailed tensor analysis (use sparingly)
+            force: If True, always log regardless of enabled state
         """
-        if not self.enabled:
+        if not (self.enabled or force):
             return
         
         # Collect memory metrics efficiently
         memory_info = self._collect_memory_metrics()
         
         # Show category
-        self.log(f"{label}:", category="memory")
+        self.log(f"{label}:", category="memory", force=force)
 
         # Show VRAM
         if memory_info['summary_vram']:
-            self.log(f"{memory_info['summary_vram']}", category="memory")
+            self.log(f"{memory_info['summary_vram']}", category="memory", force=force)
 
         # Show RAM
         if memory_info['summary_ram']:
-            self.log(f"{memory_info['summary_ram']}", category="memory")
+            self.log(f"{memory_info['summary_ram']}", category="memory", force=force)
 
         # Show tensors
         if show_tensors:
             tensor_stats = self._collect_tensor_stats(detailed=detailed_tensors)
-            self.log(f"{tensor_stats['summary']}", category="memory")
+            self.log(f"{tensor_stats['summary']}", category="memory", force=force)
         
         # Show diff from last checkpoint
         if show_diff and self.memory_checkpoints:
-            self._log_memory_diff(memory_info)
+            self._log_memory_diff(current_metrics=memory_info, force=force)
 
        # Log detailed analysis if requested
         if detailed_tensors and tensor_stats.get('details'):
-            self._log_detailed_tensor_analysis(tensor_stats['details'])
+            self._log_detailed_tensor_analysis(details=tensor_stats['details'], force=force)
                 
         # Store checkpoint with memory limit
         self._store_checkpoint(label, memory_info)
@@ -274,6 +289,7 @@ class Debug:
         # Reset PyTorch's peak memory stats for next interval
         reset_vram_peak(debug=self)
     
+
     def _collect_memory_metrics(self) -> Dict[str, Any]:
         """Collect current memory metrics efficiently."""
         metrics = {
@@ -332,6 +348,7 @@ class Debug:
         
         return metrics
     
+
     def _collect_tensor_stats(self, detailed: bool = False) -> Dict[str, Any]:
         """Collect tensor statistics with minimal overhead."""
         stats = {
@@ -395,49 +412,51 @@ class Debug:
         
         return stats
     
-    def _log_detailed_tensor_analysis(self, details: Dict[str, Any]) -> None:
+
+    def _log_detailed_tensor_analysis(self, details: Dict[str, Any], force: bool = False) -> None:
         """Log detailed tensor analysis when requested."""
         
         # GPU tensors
         if details['gpu_tensors']:
             gpu_total_gb = sum(t['size_mb'] for t in details['gpu_tensors']) / 1024
-            self.log(f"  GPU tensors: {len(details['gpu_tensors'])} using {gpu_total_gb:.2f}GB", category="memory")
+            self.log(f"  GPU tensors: {len(details['gpu_tensors'])} using {gpu_total_gb:.2f}GB", category="memory", force=force)
             
             # Show top 5 largest
             largest = sorted(details['gpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:5]
             for t in largest:
-                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory", force=force)
         
         # Large CPU tensors
         if details['large_cpu_tensors']:
             cpu_large_gb = sum(t['size_mb'] for t in details['large_cpu_tensors']) / 1024
-            self.log(f"  Large CPU tensors (>10MB):", category="memory")
-            self.log(f"    {len(details['large_cpu_tensors'])} using {cpu_large_gb:.2f}GB", category="memory")
+            self.log(f"  Large CPU tensors (>10MB):", category="memory", force=force)
+            self.log(f"    {len(details['large_cpu_tensors'])} using {cpu_large_gb:.2f}GB", category="memory", force=force)
             
             # Show top 3 largest
             largest = sorted(details['large_cpu_tensors'], key=lambda x: x['size_mb'], reverse=True)[:3]
             for t in largest:
-                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory")
+                self.log(f"    {t['shape']}: {t['size_mb']:.2f}MB, {t['dtype']}", category="memory", force=force)
         
         # Common shape patterns
         if details['shape_patterns']:
             common_shapes = sorted(details['shape_patterns'].items(), 
                                   key=lambda x: x[1], reverse=True)[:5]
             if len(common_shapes) > 0:
-                self.log("  Common tensor shapes:", category="memory")
+                self.log("  Common tensor shapes:", category="memory", force=force)
                 for shape, count in common_shapes:
                     if count > 1:
-                        self.log(f"    {shape}: {count} instances", category="memory")
+                        self.log(f"    {shape}: {count} instances", category="memory", force=force)
         
         # Module instances
         if details['module_types']:
             multi_instance = [(k, v) for k, v in details['module_types'].items() if v > 1]
             if multi_instance:
-                self.log("  Multiple module instances:", category="memory")
+                self.log("  Multiple module instances:", category="memory", force=force)
                 for mtype, count in sorted(multi_instance, key=lambda x: x[1], reverse=True)[:5]:
-                    self.log(f"    {mtype}: {count} instances", category="memory")
+                    self.log(f"    {mtype}: {count} instances", category="memory", force=force)
     
-    def _log_memory_diff(self, current_metrics: Dict[str, Any]) -> None:
+
+    def _log_memory_diff(self, current_metrics: Dict[str, Any], force: bool = False) -> None:
         """Log memory changes from last checkpoint."""
         last = self.memory_checkpoints[-1]
         
@@ -453,8 +472,9 @@ class Debug:
             diffs.append(f"RAM {sign}{ram_diff:.2f}GB")
         
         if diffs:
-            self.log(f"  Memory changes: {', '.join(diffs)}", category="memory")
+            self.log(f"  Memory changes: {', '.join(diffs)}", category="memory", force=force)
     
+
     def _store_checkpoint(self, label: str, metrics: Dict[str, Any]) -> None:
         """Store checkpoint with memory limit to prevent leaks."""
         checkpoint = {
@@ -477,10 +497,19 @@ class Debug:
             self.memory_checkpoints = (self.memory_checkpoints[:mid] + 
                                       self.memory_checkpoints[-mid:])
     
+
     def log_swap_time(self, component_id: Union[int, str], duration: float, 
-                 component_type: str = "block") -> None:
-        """Log swap timing information for BlockSwap operations"""
-        if self.enabled:
+                 component_type: str = "block", force: bool = False) -> None:
+        """
+        Log swap timing information for BlockSwap operations
+        
+        Args:
+            component_id: Identifier for the component being swapped
+            duration: Duration of the swap in seconds
+            component_type: Type of component ('block' or other)
+            force: If True, always log regardless of enabled state
+        """
+        if self.enabled or force:
             # Store timing data
             self.swap_times.append({
                 'component_id': component_id,
@@ -494,18 +523,8 @@ class Debug:
             else:
                 message = f"{component_type} {component_id} swap: {duration*1000:.2f}ms"
             
-            self.log(message, category="blockswap")
+            self.log(message, category="blockswap", force=force)
     
-    def clear_history(self) -> None:
-        """Clear all history tracking"""
-        self.timers.clear()
-        self.memory_checkpoints.clear()
-        self.swap_times.clear()
-        self.vram_history.clear()
-        self.timer_hierarchy.clear()
-        self.timer_durations.clear()
-        self.timer_messages.clear()
-        self.active_timer_stack.clear()
     
     def get_swap_summary(self) -> Dict[str, Any]:
         """Get summary of swap operations for analysis"""
@@ -554,3 +573,15 @@ class Debug:
             summary['vram_variation_gb'] = max(self.vram_history) - min(self.vram_history)
         
         return summary
+    
+    
+    def clear_history(self) -> None:
+        """Clear all history tracking"""
+        self.timers.clear()
+        self.memory_checkpoints.clear()
+        self.swap_times.clear()
+        self.vram_history.clear()
+        self.timer_hierarchy.clear()
+        self.timer_durations.clear()
+        self.timer_messages.clear()
+        self.active_timer_stack.clear()
