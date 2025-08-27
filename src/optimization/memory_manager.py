@@ -855,4 +855,8 @@ def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool
     
     # 4. Final memory cleanup
     clear_memory(debug=debug, deep=True, force=True)
+
+    # 5. Clearing cuBLAS workspaces
+    torch._C._cuda_clearCublasWorkspaces() if hasattr(torch._C, '_cuda_clearCublasWorkspaces') else None
+
     debug.log(f"Completed {cleanup_type}", category="success")

@@ -104,15 +104,17 @@ class VideoDiffusionInfer():
             return cond
         raise NotImplementedError
     
-    def configure_diffusion(self):
+    def configure_diffusion(self, dtype=torch.float32):
         self.schedule = create_schedule_from_config(
             config=self.config.diffusion.schedule,
             device=get_device(),
+            dtype=dtype,
         )
         self.sampling_timesteps = create_sampling_timesteps_from_config(
             config=self.config.diffusion.timesteps.sampling,
             schedule=self.schedule,
             device=get_device(),
+            dtype=dtype,
         )
         self.sampler = create_sampler_from_config(
             config=self.config.diffusion.sampler,

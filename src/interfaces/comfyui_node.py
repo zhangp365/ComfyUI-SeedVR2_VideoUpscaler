@@ -165,6 +165,8 @@ class SeedVR2:
             complete_cleanup(runner=self.runner, debug=debug, keep_models_in_ram=cache_model)
             
             if not cache_model:
+                # Delete the runner completely
+                del self.runner
                 self.runner = None
         
         # Clear instance embeddings
@@ -208,7 +210,6 @@ class SeedVR2:
                     cache_model=False,
                     debug=debug,
                 )
-                self.runner = None
 
         # Configure runner
         debug.log("Configuring inference runner...", category="runner")
@@ -229,7 +230,6 @@ class SeedVR2:
 
         debug.log("", category="none", force=True)
         debug.log("Starting video upscaling generation...", category="generation", force=True)
-        debug.log("", category="none", force=True)
         debug.start_timer("generation_loop")
 
         # Execute generation with debug
