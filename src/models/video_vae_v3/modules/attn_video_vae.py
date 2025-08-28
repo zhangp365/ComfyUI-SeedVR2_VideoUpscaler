@@ -1222,26 +1222,38 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
     def _encode(
         self, x: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False
     ) -> torch.Tensor:
-        _x = x.to(self.device)
+        # Only transfer if not already on correct device
+        _x = x if x.device == self.device else x.to(self.device)
+        
         _x = causal_conv_slice_inputs(_x, self.slicing_sample_min_size, memory_state=memory_state)
         h = self.encoder(_x, memory_state=memory_state, preserve_vram=preserve_vram)
+        
         if self.quant_conv is not None:
             output = self.quant_conv(h, memory_state=memory_state)
         else:
             output = h
+        
         output = causal_conv_gather_outputs(output)
-        return output.to(x.device)
+        
+        # Only transfer back if needed
+        return output if output.device == x.device else output.to(x.device)
 
     def _decode(
         self, z: torch.Tensor, memory_state: MemoryState = MemoryState.DISABLED, preserve_vram: bool = False
     ) -> torch.Tensor:
-        _z = z.to(self.device)
+        # Only transfer if not already on correct device
+        _z = z if z.device == self.device else z.to(self.device)
+        
         _z = causal_conv_slice_inputs(_z, self.slicing_latent_min_size, memory_state=memory_state)
+        
         if self.post_quant_conv is not None:
             _z = self.post_quant_conv(_z, memory_state=memory_state)
+        
         output = self.decoder(_z, memory_state=memory_state, preserve_vram=preserve_vram)
         output = causal_conv_gather_outputs(output)
-        return output.to(z.device)
+        
+        # Only transfer back if needed
+        return output if output.device == z.device else output.to(z.device)
 
     def slicing_encode(self, x: torch.Tensor, preserve_vram: bool = False) -> torch.Tensor:
         sp_size = get_sequence_parallel_world_size()
@@ -1259,10 +1271,11 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                     self._encode(x_slices[x_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
                 )
             out = torch.cat(encoded_slices, dim=2)
-            # fix memory leak
-            for m in self.modules():
-                if isinstance(m, InflatedCausalConv3d):
-                    m.memory = None
+            # Clear memory efficiently
+            modules_with_memory = [m for m in self.modules() 
+                                if isinstance(m, InflatedCausalConv3d) and m.memory is not None]
+            for m in modules_with_memory:
+                m.memory = None
             return out
         else:
             return self._encode(x, preserve_vram=preserve_vram)
@@ -1282,7 +1295,13 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 decoded_slices.append(
                     self._decode(z_slices[z_idx], memory_state=MemoryState.ACTIVE, preserve_vram=preserve_vram)
                 )
-            return torch.cat(decoded_slices, dim=2)
+            out = torch.cat(decoded_slices, dim=2)
+            # Clear memory efficiently
+            modules_with_memory = [m for m in self.modules() 
+                                if isinstance(m, InflatedCausalConv3d) and m.memory is not None]
+            for m in modules_with_memory:
+                m.memory = None
+            return out
         else:
             return self._decode(z, preserve_vram=preserve_vram)
 
@@ -1322,6 +1341,22 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         num_tiles = ((max(H_lat_total - latent_overlap_h, 1) + stride_h - 1) // stride_h) \
                   * ((max(W_lat_total - latent_overlap_w, 1) + stride_w - 1) // stride_w)
 
+        # Log once at start instead of per-tile
+        if self.debug:
+            self.debug.log(
+                f"Encoding {num_tiles} tiles (Tile: {tile_size}, Overlap: {tile_overlap})",
+                category="vae",
+            )
+
+        # Pre-compute common ramp values
+        ramp_cache = {}
+        if latent_overlap_h > 0:
+            t_h = torch.linspace(0, 1, steps=latent_overlap_h, device=x.device, dtype=x.dtype)
+            ramp_cache['h'] = 0.5 - 0.5 * torch.cos(t_h * torch.pi)
+        if latent_overlap_w > 0:
+            t_w = torch.linspace(0, 1, steps=latent_overlap_w, device=x.device, dtype=x.dtype)
+            ramp_cache['w'] = 0.5 - 0.5 * torch.cos(t_w * torch.pi)
+
         tile_id = 0
         for y_lat in range(0, H_lat_total, stride_h):
             y_lat_end = min(y_lat + latent_tile_h, H_lat_total)
@@ -1341,10 +1376,20 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
 
                 tile_id += 1
                 tile_sample = x[:, :, :, y_out:y_out_end, x_out:x_out_end]
-                self.debug.log(
-                    f"Encoding tile {tile_id} / {num_tiles} (Lat [{y_lat}:{y_lat_end}, {x_lat}:{x_lat_end}] -> Out [{y_out}:{y_out_end}, {x_out}:{x_out_end}], Shape: {list(tile_sample.shape)})",
-                    category="vae",
-                )
+
+                # Log progress periodically instead of every tile
+                if self.debug and (tile_id == 1 or tile_id % 5 == 0 or tile_id == num_tiles):
+                    end_tile = min(tile_id + 4, num_tiles)
+                    if tile_id == num_tiles:
+                        self.debug.log(
+                            f"Encoding tile {tile_id} / {num_tiles}",
+                            category="vae",
+                        )
+                    else:
+                        self.debug.log(
+                            f"Encoding tiles {tile_id}-{end_tile} / {num_tiles}",
+                            category="vae",
+                        )
 
                 encoded_tile = self.slicing_encode(tile_sample, preserve_vram=preserve_vram)
 
@@ -1366,40 +1411,31 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 # Build faded masks
                 ov_h = max(0, min(latent_overlap_h, eff_h_lat - 1))
                 ov_w = max(0, min(latent_overlap_w, eff_w_lat - 1))
+                
                 weight_h = torch.ones((eff_h_lat,), device=encoded_tile.device, dtype=encoded_tile.dtype)
                 weight_w = torch.ones((eff_w_lat,), device=encoded_tile.device, dtype=encoded_tile.dtype)
 
-                # Apply fades only on interior edges (avoid fading on outer image borders)
-                top_edge = (y_lat == 0)
-                bottom_edge = (y_lat_end == H_lat_total)
-                left_edge = (x_lat == 0)
-                right_edge = (x_lat_end == W_lat_total)
-
+                # Apply fades only on interior edges using cached ramps (avoid fading on outer image borders)
                 if ov_h > 0:
-                    t_h = torch.linspace(0, 1, steps=ov_h, device=encoded_tile.device, dtype=encoded_tile.dtype)
-                    ramp_h = 0.5 - 0.5 * torch.cos(t_h * torch.pi)  # Hann ramp 0->1
-                    if not top_edge:
-                        weight_h[:ov_h] = ramp_h
-                    if not bottom_edge:
-                        weight_h[-ov_h:] = 1 - ramp_h
+                    if y_lat > 0:  # Not top edge
+                        weight_h[:ov_h] = ramp_cache['h'][:ov_h]
+                    if y_lat_end < H_lat_total:  # Not bottom edge
+                        weight_h[-ov_h:] = 1 - ramp_cache['h'][:ov_h]
                 if ov_w > 0:
-                    t_w = torch.linspace(0, 1, steps=ov_w, device=encoded_tile.device, dtype=encoded_tile.dtype)
-                    ramp_w = 0.5 - 0.5 * torch.cos(t_w * torch.pi)  # Hann ramp 0->1
-                    if not left_edge:
-                        weight_w[:ov_w] = ramp_w
-                    if not right_edge:
-                        weight_w[-ov_w:] = 1 - ramp_w
+                    if x_lat > 0:  # Not left edge
+                        weight_w[:ov_w] = ramp_cache['w'][:ov_w]
+                    if x_lat_end < W_lat_total:  # Not right edge
+                        weight_w[-ov_w:] = 1 - ramp_cache['w'][:ov_w]
 
                 # Separable application (no 2D mask to save memory)
                 weight_h_5d = weight_h.view(1, 1, 1, eff_h_lat, 1)
                 weight_w_5d = weight_w.view(1, 1, 1, 1, eff_w_lat)
-                encoded_tile.mul_(weight_h_5d)
-                encoded_tile.mul_(weight_w_5d)
+                encoded_tile.mul_(weight_h_5d).mul_(weight_w_5d)
 
                 result[:, :, : encoded_tile.shape[2], y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat] += encoded_tile
                 count[:, :, :, y_lat : y_lat + eff_h_lat, x_lat : x_lat + eff_w_lat].addcmul_(weight_h_5d, weight_w_5d)
 
-        result = result / count.clamp(min=1e-6)  # normalize
+        result.div_(count.clamp(min=1e-6)) # In-place normalize
 
         if x.shape[2] == 1:  # single frame
             result = result.squeeze(2)
@@ -1437,6 +1473,22 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         num_tiles = ((max(H - latent_overlap_h, 1) + stride_h - 1) // stride_h) \
                   * ((max(W - latent_overlap_w, 1) + stride_w - 1) // stride_w)
 
+        # Log once at start instead of per-tile
+        if self.debug:
+            self.debug.log(
+                f"Decoding {num_tiles} tiles (Tile: {tile_size}, Overlap: {tile_overlap})",
+                category="vae",
+            )
+
+        # Pre-compute common ramp values (small memory, big time save)
+        ramp_cache = {}
+        if overlap_h > 0:
+            t_h = torch.linspace(0, 1, steps=overlap_h, device=z.device, dtype=z.dtype)
+            ramp_cache['h'] = 0.5 - 0.5 * torch.cos(t_h * torch.pi)
+        if overlap_w > 0:
+            t_w = torch.linspace(0, 1, steps=overlap_w, device=z.device, dtype=z.dtype)
+            ramp_cache['w'] = 0.5 - 0.5 * torch.cos(t_w * torch.pi)
+
         tile_id = 0
         for y_lat in range(0, H, stride_h):
             y_lat_end = min(y_lat + latent_tile_h, H)
@@ -1450,6 +1502,20 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
 
                 tile_id += 1
                 tile_latent = z[:, :, :, y_lat:y_lat_end, x_lat:x_lat_end]
+
+                # Log progress periodically instead of every tile
+                if self.debug and (tile_id == 1 or tile_id % 5 == 0 or tile_id == num_tiles):
+                    end_tile = min(tile_id + 4, num_tiles)
+                    if tile_id == num_tiles:
+                        self.debug.log(
+                            f"Decoding tile {tile_id} / {num_tiles}",
+                            category="vae",
+                        )
+                    else:
+                        self.debug.log(
+                            f"Decoding tiles {tile_id}-{end_tile} / {num_tiles}",
+                            category="vae",
+                        )
 
                 decoded_tile = self.slicing_decode(tile_latent, preserve_vram=preserve_vram)
 
@@ -1465,52 +1531,38 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 y_out, y_out_end = y_lat * scale_factor, y_lat_end * scale_factor
                 x_out, x_out_end = x_lat * scale_factor, x_lat_end * scale_factor
 
-                self.debug.log(
-                    f"Decoding tile {tile_id} / {num_tiles} (Lat [{y_lat}:{y_lat_end}, {x_lat}:{x_lat_end}] -> Out [{y_out}:{y_out_end}, {x_out}:{x_out_end}], Shape: {list(tile_latent.shape)})",
-                    category="vae",
-                )
-
                 h_out = y_out_end - y_out
                 w_out = x_out_end - x_out
 
                 # Build faded masks
                 ov_h_out = max(0, min(overlap_h, h_out - 1))
                 ov_w_out = max(0, min(overlap_w, w_out - 1))
+                
                 weight_h = torch.ones((h_out,), device=decoded_tile.device, dtype=decoded_tile.dtype)
                 weight_w = torch.ones((w_out,), device=decoded_tile.device, dtype=decoded_tile.dtype)
 
-                # Apply fades only on interior edges (avoid fading on outer image borders)
-                top_edge = (y_lat == 0)
-                bottom_edge = (y_lat_end == H)
-                left_edge = (x_lat == 0)
-                right_edge = (x_lat_end == W)
-
+                # Apply fades only on interior edges using cached ramps (avoid fading on outer image borders)
                 if ov_h_out > 0:
-                    t_h = torch.linspace(0, 1, steps=ov_h_out, device=decoded_tile.device, dtype=decoded_tile.dtype)
-                    ramp_h = 0.5 - 0.5 * torch.cos(t_h * torch.pi)  # Hann ramp 0->1
-                    if not top_edge:
-                        weight_h[:ov_h_out] = ramp_h
-                    if not bottom_edge:
-                        weight_h[-ov_h_out:] = 1 - ramp_h
+                    if y_lat > 0:  # Not top edge
+                        weight_h[:ov_h_out] = ramp_cache['h'][:ov_h_out]
+                    if y_lat_end < H:  # Not bottom edge
+                        weight_h[-ov_h_out:] = 1 - ramp_cache['h'][:ov_h_out]
                 if ov_w_out > 0:
-                    t_w = torch.linspace(0, 1, steps=ov_w_out, device=decoded_tile.device, dtype=decoded_tile.dtype)
-                    ramp_w = 0.5 - 0.5 * torch.cos(t_w * torch.pi)  # Hann ramp 0->1
-                    if not left_edge:
-                        weight_w[:ov_w_out] = ramp_w
-                    if not right_edge:
-                        weight_w[-ov_w_out:] = 1 - ramp_w
+                    if x_lat > 0:  # Not left edge
+                        weight_w[:ov_w_out] = ramp_cache['w'][:ov_w_out]
+                    if x_lat_end < W:  # Not right edge
+                        weight_w[-ov_w_out:] = 1 - ramp_cache['w'][:ov_w_out]
 
                 # Separable application (no 2D mask to save memory)
                 weight_h_5d = weight_h.view(1, 1, 1, h_out, 1)
                 weight_w_5d = weight_w.view(1, 1, 1, 1, w_out)
-                decoded_tile.mul_(weight_h_5d)
-                decoded_tile.mul_(weight_w_5d)
+                decoded_tile.mul_(weight_h_5d).mul_(weight_w_5d)
 
                 # Accumulate into result/count
                 result[:, :, : decoded_tile.shape[2], y_out:y_out_end, x_out:x_out_end] += decoded_tile
                 count[:, :, :, y_out:y_out_end, x_out:x_out_end].addcmul_(weight_h_5d, weight_w_5d)
 
-        result = result / count.clamp(min=1e-6)  # normalize
+        result.div_(count.clamp(min=1e-6)) # In-place normalize
 
         if z.shape[2] == 1:  # single frame
             result = result.squeeze(2)
