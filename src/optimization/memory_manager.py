@@ -286,7 +286,7 @@ def retry_on_oom(func, *args, debug=None, operation_name="operation", **kwargs):
         
         if debug:
             debug.log(f"OOM during {operation_name}: {e}", level="WARNING", category="memory", force=True)
-            debug.log(f"Clearing memory and retrying", category="cleanup", force=True)
+            debug.log(f"Clearing memory and retrying", category="info", force=True)
         
         # Clear memory
         clear_memory(debug=debug, deep=True, force=True)
@@ -319,94 +319,6 @@ def reset_vram_peak(debug: Optional[Any]) -> None:
         # MPS doesn't support peak memory reset
     except Exception as e:
         debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
-
-def preinitialize_rope_cache(runner: Any, debug: Optional[Any]) -> None:
-    """
-    🚀 Pre-initialize RoPE cache to avoid OOM at first launch
-    
-    Args:
-        runner: The model runner containing DiT and VAE models
-        debug: Optional Debug instance
-    """
-    
-    debug.log("Pre-initializing RoPE cache to avoid OOM...", category="setup")
-
-    try:
-        # Create dummy tensors to simulate common shapes
-        # Format: [batch, channels, frames, height, width] for vid_shape
-        # Format: [batch, seq_len] for txt_shape
-        common_shapes = [
-            # Common video resolutions
-            (torch.tensor([[1, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 1 frame, 77 tokens
-            (torch.tensor([[4, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 4 frames
-            (torch.tensor([[5, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 5 frames (4n+1 format)
-            (torch.tensor([[1, 4, 4]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # Higher resolution
-        ]
-        
-        # Create mock cache for pre-initialization
-            
-        temp_cache = Cache()
-        
-        # Access RoPE modules in DiT (recursive search)
-        def find_rope_modules(module):
-            rope_modules = []
-            for name, child in module.named_modules():
-                if hasattr(child, 'get_freqs') and callable(getattr(child, 'get_freqs')):
-                    rope_modules.append((name, child))
-            return rope_modules
-        
-        rope_modules = find_rope_modules(runner.dit)
-        
-        # Pre-calculate for each RoPE module found
-        for name, rope_module in rope_modules:
-            # Temporarily move module to CPU if necessary
-            original_device = next(rope_module.parameters()).device if list(rope_module.parameters()) else torch.device('cpu')
-            rope_module.to('cpu')
-            
-            try:
-                for vid_shape, txt_shape in common_shapes:
-                    cache_key = f"720pswin_by_size_bysize_{tuple(vid_shape[0].tolist())}_sd3.mmrope_freqs_3d"
-                    
-                    def compute_freqs():
-                        try:
-                            # Calculate with reduced dimensions to avoid OOM
-                            with torch.no_grad():
-                                # Detect RoPE module type
-                                module_type = type(rope_module).__name__
-                                
-                                if module_type == 'NaRotaryEmbedding3d':
-                                    # NaRotaryEmbedding3d: only takes shape (vid_shape)
-                                    return rope_module.get_freqs(vid_shape.cpu())
-                                else:
-                                    # Standard RoPE: takes vid_shape and txt_shape
-                                    return rope_module.get_freqs(vid_shape.cpu(), txt_shape.cpu())
-                                    
-                        except Exception as e:
-                            debug.log(f"Failed pre-initializing RoPE cache for {cache_key}: {e}", level="ERROR", category="setup", force=True)
-                            # Return empty tensors as fallback
-                            clear_memory(debug=debug, deep=True, force=True)
-                            time.sleep(1)
-
-                            return torch.zeros(1, 64)
-                    
-                    # Store in cache
-                    temp_cache(cache_key, compute_freqs)
-                
-            except Exception as e:
-                debug.log(f"Error in module {name}: {e}", level="ERROR", category="setup", force="True")
-            finally:
-                # Restore to original device
-                rope_module.to(original_device)
-        
-        # Copy temporary cache to runner cache
-        if hasattr(runner, 'cache'):
-            runner.cache.cache.update(temp_cache.cache)
-        else:
-            runner.cache = temp_cache
-        
-    except Exception as e:
-        debug.log(f"Error during RoPE pre-init: {e}", level="ERROR", category="setup", force=True)
-        debug.log("Model will work but could have OOM at first launch", level="WARNING", category="info", force=True)
 
 
 def clear_rope_lru_caches(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> int:

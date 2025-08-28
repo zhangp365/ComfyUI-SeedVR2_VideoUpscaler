@@ -8,7 +8,6 @@ Extracted from: seedvr2.py (lines 1045-1630)
 import torch
 import types
 
-
 def call_rope_with_stability(method, *args, **kwargs):
     """
     Call RoPE method with stability fixes:
@@ -48,16 +47,25 @@ class FP8CompatibleDiT(torch.nn.Module):
             model_variant = "7B" if self._is_nadit_model() else "3B" if self._is_nadit_v2_model() else "Unknown"
             self.debug.log(f"Detected NaDiT {model_variant} FP8 - Converting RoPE freqs for FP8 compatibility", 
                           category="precision")
+            self.debug.start_timer("_convert_rope_freqs")
             self._convert_rope_freqs()
+            self.debug.end_timer("_convert_rope_freqs", "RoPE freqs conversion")
             if torch.mps.is_available():
                 self.debug.log(f"Also converting NaDiT parameters/buffers for MPS backend", category="setup", force=True)
+                self.debug.start_timer("_force_nadit_bfloat16")
                 self._force_nadit_bfloat16()
+                self.debug.end_timer("_force_nadit_bfloat16", "NaDiT parameters/buffers conversion")
             
         # Apply RoPE stabilization for numerical stability
+        self.debug.log(f"Stabilizing RoPE computations for numerical stability", category="setup")
+        self.debug.start_timer("_stabilize_rope_computations")
         self._stabilize_rope_computations()
+        self.debug.end_timer("_stabilize_rope_computations", "RoPE stabilization")
 
         # 🚀 FLASH ATTENTION OPTIMIZATION (Phase 2)
+        self.debug.start_timer("_apply_flash_attention_optimization")
         self._apply_flash_attention_optimization()
+        self.debug.end_timer("_apply_flash_attention_optimization", "Flash Attention application")
     
     def _detect_model_dtype(self) -> torch.dtype:
         """Detect main model dtype"""
@@ -141,9 +149,6 @@ class FP8CompatibleDiT(torch.nn.Module):
         if not hasattr(self.dit_model, 'blocks'):
             return
         
-        self.debug.start_timer("stabilize_rope")
-        self.debug.log(f"Stabilizing RoPE computations for numerical stability", category="setup")
-        
         rope_count = 0
         
         # Wrap RoPE modules to handle numerical instability
@@ -171,8 +176,6 @@ class FP8CompatibleDiT(torch.nn.Module):
         
         if rope_count > 0:
             self.debug.log(f"Stabilized {rope_count} RoPE modules", category="success")
-        
-        self.debug.end_timer("stabilize_rope", f"Stabilizing RoPE modules")
 
     def _apply_flash_attention_optimization(self) -> None:
         """🚀 FLASH ATTENTION OPTIMIZATION - 30-50% speedup of attention layers"""

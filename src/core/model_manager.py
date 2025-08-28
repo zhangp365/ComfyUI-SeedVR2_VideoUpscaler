@@ -30,7 +30,6 @@ except ImportError:
 
 from src.optimization.memory_manager import get_basic_vram_info
 from src.optimization.compatibility import FP8CompatibleDiT
-from src.optimization.memory_manager import preinitialize_rope_cache, clear_rope_lru_caches
 from src.common.config import load_config, create_object
 from src.core.infer import VideoDiffusionInfer
 from src.optimization.blockswap import apply_block_swap_to_dit
@@ -198,14 +197,6 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     blockswap_active = (
         block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0
     )
-
-    # Pre-initialize RoPE cache for optimal performance if BlockSwap is NOT active
-    if not blockswap_active:
-        debug.start_timer("rope_cache_preinit")
-        preinitialize_rope_cache(runner=runner, debug=debug)
-        debug.end_timer("rope_cache_preinit", "RoPE cache pre-initialization")
-    else:
-        debug.log("Skipping RoPE cache pre-initialization (BlockSwap handles RoPE on-demand to save memory)", category="info")
     
     # Apply BlockSwap if configured
     if blockswap_active:

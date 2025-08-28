@@ -386,7 +386,8 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                         error_msg = str(e).lower()
                         # Only handle device/memory specific errors
                         if any(x in error_msg for x in ["device", "memory", "allocation"]):
-                            debug.log(f"RoPE device issue for {module_name}: {e}", level="WARNING", category="blockswap", force=True)
+                            debug.log(f"RoPE OOM for {module_name}", level="WARNING", category="rope", force=True)
+                            debug.log(f"Clearing RoPE cache and retrying", category="info", force=True)
                             
                             # Get current device from parameters
                             current_device = next(self.parameters()).device if list(self.parameters()) else get_device()
@@ -395,12 +396,13 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                             if hasattr(current_fn, 'cache_clear'):
                                 current_fn.cache_clear()
                                 try:
+                                    # Retry on same device after clearing cache
                                     return current_fn(*args, **kwargs)
-                                except:
-                                    pass
+                                except Exception as retry_error:
+                                    # Cache clear wasn't enough, need more drastic measures
+                                    debug.log(f"Cache clear insufficient for {module_name}, falling back to CPU", level="WARNING", category="rope", force=True)
                             
                             # Fallback to CPU computation with stability
-                            debug.log(f"RoPE fallback to CPU for {module_name} (attempting cache reuse)", category="reuse")
                             self.cpu()
                             
                             try:

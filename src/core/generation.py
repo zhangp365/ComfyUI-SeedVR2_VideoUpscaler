@@ -410,11 +410,8 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             debug.log(f"Considerations:", category="info", force=True)
             debug.log(f"   Smaller batches: More flickering BUT uses less memory", category="info", force=True)
             debug.log(f"   Larger batches: Better temporal coherence BUT uses more memory", category="info", force=True)
-            debug.log(f"   Wasted padding: Increases memory usage and processing time unnecessarily", category="info", force=True)
+            debug.log(f"   Padding waste: Increases memory usage and processing time unnecessarily", category="info", force=True)
             debug.log(f"", category="none")
-
-    # Memory cleanup
-    clear_memory(debug=debug, deep=True, force=True)
 
     debug.end_timer("generation_setup", "Generation setup", show_breakdown=True)
     debug.log_memory_state("After generation setup", detailed_tensors=False)
