@@ -179,10 +179,18 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     debug.end_timer("dit_model_infer", "DiT model configuration")
     debug.log_memory_state("After DiT model configuration", detailed_tensors=False)
 
+    # Set VAE dtype for MPS compatibility
+    if torch.mps.is_available():
+        original_vae_dtype = config.vae.dtype
+        config.vae.dtype = "bfloat16"
+        debug.log(f"MPS detected: Setting VAE dtype from {original_vae_dtype} to {config.vae.dtype} for compatibility", 
+                    category="precision", force=True)
+    
     debug.start_timer("vae_model_infer")
     vae_checkpoint_path = os.path.join(base_cache_dir, f'./{config.vae.checkpoint}')
+    vae_override_dtype = getattr(torch, config.vae.dtype) if torch.mps.is_available() else None
     runner = configure_model_inference(runner, "vae", device, vae_checkpoint_path, config,
-                                   preserve_vram, debug=debug)
+                                   preserve_vram, debug=debug, override_dtype=vae_override_dtype)
     debug.log(f"VAE downsample factors configured (spatial: {spatial_downsample_factor}x, temporal: {temporal_downsample_factor}x)", category="vae")
     debug.end_timer("vae_model_infer", "VAE model configuration")
     debug.log_memory_state("After VAE model configuration", detailed_tensors=False)
@@ -244,7 +252,8 @@ def _propagate_debug_to_modules(module, debug):
 
 
 def configure_model_inference(runner, model_type, device, checkpoint_path, config, 
-                             preserve_vram=False, debug=None, block_swap_config=None):
+                             preserve_vram=False, debug=None, block_swap_config=None,
+                             override_dtype=None):
     """
     Configure DiT or VAE model for inference with optimized memory management.
     
@@ -260,6 +269,8 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
         preserve_vram (bool): Keep model on CPU to preserve VRAM
         debug: Debug instance for logging and profiling
         block_swap_config (dict): BlockSwap configuration (DiT only)
+        override_dtype (torch.dtype, optional): Override model weights dtype during loading
+            (e.g., torch.bfloat16 for MPS compatibility)
         
     Returns:
         runner: Updated runner with configured model
@@ -293,7 +304,7 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
     # Create and load model
     model = _create_model(model_config, target_device, use_cpu, model_type_upper, debug)
     model = _load_model_weights(model, checkpoint_path, target_device, use_cpu, 
-                                model_type_upper, cpu_reason, debug)
+                                model_type_upper, cpu_reason, debug, override_dtype)
     
     # Apply model-specific configurations
     model = _apply_model_specific_config(model, runner, config, is_dit, debug)
@@ -341,7 +352,7 @@ def _create_model(model_config, target_device, use_meta_init, model_type, debug)
 
 
 def _load_model_weights(model, checkpoint_path, target_device, used_meta, 
-                       model_type, cpu_reason, debug):
+                       model_type, cpu_reason, debug, override_dtype=None):
     """
     Load and apply model weights with appropriate strategy.
     
@@ -356,6 +367,8 @@ def _load_model_weights(model, checkpoint_path, target_device, used_meta,
         model_type: Model type string for logging
         cpu_reason: Reason string if using CPU
         debug: Debug instance
+        override_dtype (torch.dtype, optional): Convert weights to this dtype during loading
+            (e.g., torch.bfloat16 for MPS compatibility)
         
     Returns:
         Model with loaded weights
@@ -374,6 +387,15 @@ def _load_model_weights(model, checkpoint_path, target_device, used_meta,
     state = load_quantized_state_dict(checkpoint_path, target_device)
     debug.end_timer(f"{model_type_lower}_weights_load", f"{model_type} weights loaded from file")
     
+    # Convert dtype if requested
+    if override_dtype is not None:
+        debug.log(f"Converting {model_type} weights to {override_dtype} during loading", category="precision")
+        debug.start_timer(f"{model_type_lower}_dtype_convert")
+        for key in state:
+            if torch.is_tensor(state[key]) and state[key].is_floating_point():
+                state[key] = state[key].to(override_dtype)
+        debug.end_timer(f"{model_type_lower}_dtype_convert", f"{model_type} weights converted to {override_dtype}")
+
     # Log weight statistics
     num_params = len(state)
     total_size_mb = sum(p.nelement() * p.element_size() for p in state.values()) / (1024 * 1024)
