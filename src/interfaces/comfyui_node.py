@@ -283,7 +283,7 @@ class SeedVR2:
         
         # Log final memory state after ALL cleanup is done
         debug.end_timer("final_cleanup", "Final cleanup", show_breakdown=True)
-        debug.log_memory_state("After final cleanup", show_tensors=True, detailed_tensors=True)
+        debug.log_memory_state("After final cleanup", show_tensors=True, detailed_tensors=False)
         
         # Final timing summary
         debug.log("", category="none")
