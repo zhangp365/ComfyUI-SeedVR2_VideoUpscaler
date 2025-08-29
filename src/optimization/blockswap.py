@@ -386,7 +386,8 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                         error_msg = str(e).lower()
                         # Only handle device/memory specific errors
                         if any(x in error_msg for x in ["device", "memory", "allocation"]):
-                            debug.log(f"RoPE device issue for {module_name}: {e}", level="WARNING", category="blockswap", force=True)
+                            debug.log(f"RoPE OOM for {module_name}", level="WARNING", category="rope", force=True)
+                            debug.log(f"Clearing RoPE cache and retrying", category="info", force=True)
                             
                             # Get current device from parameters
                             current_device = next(self.parameters()).device if list(self.parameters()) else get_device()
@@ -395,12 +396,13 @@ def _patch_rope_for_blockswap(model, debug) -> None:
                             if hasattr(current_fn, 'cache_clear'):
                                 current_fn.cache_clear()
                                 try:
+                                    # Retry on same device after clearing cache
                                     return current_fn(*args, **kwargs)
-                                except:
-                                    pass
+                                except Exception as retry_error:
+                                    # Cache clear wasn't enough, need more drastic measures
+                                    debug.log(f"Cache clear insufficient for {module_name}, falling back to CPU", level="WARNING", category="rope", force=True)
                             
                             # Fallback to CPU computation with stability
-                            debug.log(f"RoPE fallback to CPU for {module_name} (attempting cache reuse)", category="reuse")
                             self.cpu()
                             
                             try:
@@ -458,9 +460,17 @@ def _protect_model_from_move(model, runner, debug) -> None:
         
         # Define the protected method without closures
         def protected_model_to(self, device, *args, **kwargs):
+            # Check if protection is temporarily bypassed for preserve_vram
+            runner_ref = getattr(self, '_blockswap_runner_ref', None)
+            if runner_ref:
+                runner_obj = runner_ref()
+                if runner_obj and getattr(runner_obj, "_blockswap_bypass_protection", False):
+                    # Protection bypassed, allow movement
+                    if hasattr(self, '_original_to'):
+                        return self._original_to(device, *args, **kwargs)
+            
             # Check blockswap status using weak reference
             if str(device) != "cpu":
-                runner_ref = getattr(self, '_blockswap_runner_ref', None)
                 if runner_ref:
                     runner_obj = runner_ref()
                     if runner_obj and hasattr(runner_obj, "_blockswap_active") and runner_obj._blockswap_active:
@@ -476,6 +486,27 @@ def _protect_model_from_move(model, runner, debug) -> None:
         
         # Bind as a method to the model instance
         model.to = types.MethodType(protected_model_to, model)
+
+
+def set_blockswap_bypass(runner, bypass: bool, debug):
+    """
+    Set or unset bypass flag for BlockSwap protection.
+    Used by preserve_vram to temporarily allow model movement.
+    
+    Args:
+        runner: Runner instance with BlockSwap
+        bypass: True to bypass protection, False to enforce it
+        debug: Debug instance for logging
+    """
+    if not hasattr(runner, "_blockswap_active") or not runner._blockswap_active:
+        return
+    
+    runner._blockswap_bypass_protection = bypass
+    
+    if bypass:
+        debug.log("BlockSwap protection disabled to allow model DiT offloading", category="success")
+    else:
+        debug.log("BlockSwap protection renabled to avoid accidentally offloading the entire DiT model", category="success")
 
 
 def cleanup_blockswap(runner, keep_state_for_cache=False):

@@ -104,15 +104,17 @@ class VideoDiffusionInfer():
             return cond
         raise NotImplementedError
     
-    def configure_diffusion(self):
+    def configure_diffusion(self, dtype=torch.float32):
         self.schedule = create_schedule_from_config(
             config=self.config.diffusion.schedule,
             device=get_device(),
+            dtype=dtype,
         )
         self.sampling_timesteps = create_sampling_timesteps_from_config(
             config=self.config.diffusion.timesteps.sampling,
             schedule=self.schedule,
             device=get_device(),
+            dtype=dtype,
         )
         self.sampler = create_sampler_from_config(
             config=self.config.diffusion.sampler,
@@ -127,6 +129,7 @@ class VideoDiffusionInfer():
 
     @torch.no_grad()
     def vae_encode(self, samples: List[Tensor], preserve_vram: bool = False) -> List[Tensor]:
+        """VAE encode with configured dtype - converts samples to latents with optional tiling"""
         use_sample = self.config.vae.get("use_sample", True)
         latents = []
         if len(samples) > 0:
@@ -184,8 +187,8 @@ class VideoDiffusionInfer():
     
 
     @torch.no_grad()
-    def vae_decode(self, latents: List[Tensor], target_dtype: torch.dtype = None, preserve_vram: bool = False) -> List[Tensor]:
-        """🚀 VAE decode optimisé - décodage direct sans chunking, compatible avec autocast externe"""
+    def vae_decode(self, latents: List[Tensor], preserve_vram: bool = False) -> List[Tensor]:
+        """VAE decode with configured dtype - converts latents to samples with optional tiling"""
         samples = []
         if len(latents) > 0:
             device = get_device()
@@ -211,8 +214,7 @@ class VideoDiffusionInfer():
             self.debug.log(f"Latents shape: {latents[0].shape}", category="info")
 
             for i, latent in enumerate(latents):
-                effective_dtype = target_dtype if target_dtype is not None else dtype
-                latent = latent.to(device, effective_dtype, non_blocking=False)
+                latent = latent.to(device, dtype, non_blocking=False)
                 latent = latent / scale + shift
                 latent = rearrange(latent, "b ... c -> b c ...")
                 latent = latent.squeeze(2)
@@ -290,12 +292,6 @@ class VideoDiffusionInfer():
         # Set cfg scale
         if cfg_scale is None:
             cfg_scale = self.config.diffusion.cfg.scale
-
-        # 🚀 OPTIMISATION: Use BFloat16 autocast for all models
-        # - FP8 models: BFloat16 required for arithmetic operations
-        # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
-        # - BFloat16 models: Already optimal
-        target_dtype = torch.bfloat16
         
         # Text embeddings.
         assert type(texts_pos[0]) is type(texts_neg[0])
@@ -316,84 +312,66 @@ class VideoDiffusionInfer():
         else:
             text_pos_embeds, text_pos_shapes = na.flatten(texts_pos)
             text_neg_embeds, text_neg_shapes = na.flatten(texts_neg)
-
-        # Adapter les embeddings texte au dtype cible (compatible avec FP8)
-        if isinstance(text_pos_embeds, torch.Tensor):
-            text_pos_embeds = text_pos_embeds.to(target_dtype)
-        if isinstance(text_neg_embeds, torch.Tensor):
-            text_neg_embeds = text_neg_embeds.to(target_dtype)
-        
-        self.debug.log(f"Text embeddings adapted to precision: {target_dtype}", category="precision")
         
         # Flatten.
         latents, latents_shapes = na.flatten(noises)
         latents_cond, _ = na.flatten(conditions)
-
-        # Adapter les latents au dtype cible (compatible avec FP8)
-        latents = latents.to(target_dtype) if latents.dtype != target_dtype else latents
-        latents_cond = latents_cond.to(target_dtype) if latents_cond.dtype != target_dtype else latents_cond
-
         
         if preserve_vram:
-            # Before sampling, check if BlockSwap is active
-            if not use_blockswap and not hasattr(self, "_blockswap_active"):
-                manage_model_device(
-                    model=self.dit,
-                    target_device=str(get_device()),
-                    model_name="DiT",
-                    preserve_vram=preserve_vram,
-                    debug=self.debug,
-                    reason="inference requirement"
-                )
+            # Move model to GPU for inference
+            manage_model_device(
+                model=self.dit,
+                target_device=str(get_device()),
+                model_name="DiT",
+                preserve_vram=preserve_vram,
+                debug=self.debug,
+                reason="inference requirement",
+                runner=self
+            )
 
         self.debug.start_timer("dit_inference")
         
-        with torch.autocast(str(get_device()), target_dtype, enabled=True):
-            latents = self.sampler.sample(
-                x=latents,
-                f=lambda args: classifier_free_guidance_dispatcher(
-                    pos=lambda: self.dit(
-                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                        txt=text_pos_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_pos_shapes,
-                        timestep=args.t.repeat(batch_size),
-                    ).vid_sample,
-                    neg=lambda: self.dit(
-                        vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                        txt=text_neg_embeds,
-                        vid_shape=latents_shapes,
-                        txt_shape=text_neg_shapes,
-                        timestep=args.t.repeat(batch_size),
-                    ).vid_sample,
-                    scale=(
-                        cfg_scale
-                        if (args.i + 1) / len(self.sampler.timesteps)
-                        <= self.config.diffusion.cfg.get("partial", 1)
-                        else 1.0
-                    ),
-                    rescale=self.config.diffusion.cfg.rescale,
+        latents = self.sampler.sample(
+            x=latents,
+            f=lambda args: classifier_free_guidance_dispatcher(
+                pos=lambda: self.dit(
+                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                    txt=text_pos_embeds,
+                    vid_shape=latents_shapes,
+                    txt_shape=text_pos_shapes,
+                    timestep=args.t.repeat(batch_size),
+                ).vid_sample,
+                neg=lambda: self.dit(
+                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                    txt=text_neg_embeds,
+                    vid_shape=latents_shapes,
+                    txt_shape=text_neg_shapes,
+                    timestep=args.t.repeat(batch_size),
+                ).vid_sample,
+                scale=(
+                    cfg_scale
+                    if (args.i + 1) / len(self.sampler.timesteps)
+                    <= self.config.diffusion.cfg.get("partial", 1)
+                    else 1.0
                 ),
-            )
+                rescale=self.config.diffusion.cfg.rescale,
+            ),
+        )
         
         self.debug.end_timer("dit_inference", "DiT inference")
-        self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
 
         latents = na.unflatten(latents, latents_shapes)
         
-        # Pre-calculate dtypes (only once for efficiency)
-        vae_dtype = getattr(torch, self.config.vae.dtype)
-        decode_dtype = torch.float16 if (vae_dtype == torch.float16 or target_dtype == torch.float16) else vae_dtype
-        
-        if preserve_vram and not hasattr(self, "_blockswap_active"):
-            # Move DiT back to CPU
+        if preserve_vram:
+            # Move DiT back to CPU (preserve_vram)
             manage_model_device(
                 model=self.dit,
                 target_device="cpu",
                 model_name="DiT",
                 preserve_vram=preserve_vram,
                 debug=self.debug,
-                reason="preserve_vram mode"
+                reason="preserve_vram",
+                runner=self
             )
             # Move tensors to CPU as well to free VRAM
             latents_cond = latents_cond.to("cpu")
@@ -401,13 +379,16 @@ class VideoDiffusionInfer():
             # Clear memory for larger batches
             if latents[0].shape[0] > 1:
                 clear_memory(debug=self.debug, deep=True, force=True)
+        
+        self.debug.log_memory_state("After inference upscale", show_tensors=False, detailed_tensors=False)
 
         # Move VAE to GPU if needed for decoding
         manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)
-        self.debug.log(f"VAE decode precision: {decode_dtype}", category="precision")
+
         self.debug.log("Decoding latents to samples...", category="vae")
         self.debug.start_timer("vae_decode")
-        samples = self.vae_decode(latents, target_dtype=decode_dtype, preserve_vram=preserve_vram)
+        # VAE will use its configured dtype from model_manager
+        samples = self.vae_decode(latents, preserve_vram=preserve_vram)
         self.debug.end_timer("vae_decode", "VAE decode")
         self.debug.log(f"Samples shape: {samples[0].shape}", category="vae")
         
@@ -415,8 +396,7 @@ class VideoDiffusionInfer():
         if preserve_vram:
             manage_model_device(model=self.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=self.debug)
         
-        self.debug.log_memory_state("After VAE decode", detailed_tensors=False)
-        
+        self.debug.log_memory_state("After VAE decode", show_tensors=False, detailed_tensors=False)
         
         # Converting batch Float16 for ComfyUI (faster)
         if samples and len(samples) > 0 and samples[0].dtype != torch.float16:

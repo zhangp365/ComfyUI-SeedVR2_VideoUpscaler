@@ -24,7 +24,7 @@ from src.common.distributed import get_device
 
 
 # Import required modules
-from src.optimization.memory_manager import clear_memory, release_text_embeddings, manage_model_device, complete_cleanup
+from src.optimization.memory_manager import clear_memory, release_text_embeddings, manage_model_device
 from src.optimization.performance import (
     optimized_video_rearrange, optimized_single_video_rearrange, 
     optimized_sample_to_image_format
@@ -46,6 +46,115 @@ from src.data.image.transforms.na_resize import NaResize
 
 from src.utils.color_fix import wavelet_reconstruction
 
+
+def prepare_video_transforms(res_w):
+    """
+    Prepare optimized video transformation pipeline
+    
+    Args:
+        res_w (int): Target resolution width
+        
+    Returns:
+        Compose: Configured transformation pipeline
+        
+    Features:
+        - Resolution-aware upscaling (no downsampling)
+        - Proper normalization for model compatibility
+        - Memory-efficient tensor operations
+    """
+    return Compose([
+        NaResize(
+            resolution=(res_w),
+            mode="side",
+            # Upsample image, model only trained for high res
+            downsample_only=False,
+        ),
+        Lambda(lambda x: torch.clamp(x, 0.0, 1.0)),
+        DivisibleCrop((16, 16)),
+        Normalize(0.5, 0.5),
+        Lambda(lambda x: x.permute(1, 0, 2, 3)),  # t c h w -> c t h w (faster than Rearrange)
+    ])
+
+
+def load_text_embeddings(script_directory, device, dtype):
+    """
+    Load and prepare text embeddings for generation
+    
+    Args:
+        script_directory (str): Script directory path
+        device (str): Target device
+        dtype (torch.dtype): Target dtype
+        
+    Returns:
+        dict: Text embeddings dictionary
+        
+    Features:
+        - Adaptive dtype handling
+        - Device-optimized loading
+        - Memory-efficient embedding preparation
+    """
+    text_pos_embeds = torch.load(os.path.join(script_directory, 'pos_emb.pt')).to(device, dtype=dtype)
+    text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(device, dtype=dtype)
+    
+    return {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
+
+
+def calculate_optimal_batch_params(total_frames, batch_size, temporal_overlap):
+    """
+    Calculate optimal batch processing parameters for 4n+1 constraint.
+    
+    Args:
+        total_frames (int): Total number of frames to process
+        batch_size (int): Desired batch size
+        temporal_overlap (int): Number of overlapping frames between batches
+        
+    Returns:
+        dict: {
+            'step': Effective step size between batches,
+            'temporal_overlap': Adjusted temporal overlap,
+            'best_batch': Optimal batch size for temporal stability,
+            'padding_waste': Total frames that will be padded,
+            'is_optimal': Whether current batch_size causes no padding
+        }
+        
+    The 4n+1 constraint (1, 5, 9, 13, 17, 21...) is required by the model.
+    Best batch prioritizes temporal stability (larger batches) over padding waste.
+    """
+    # Calculate step size
+    step = batch_size - temporal_overlap
+    if step <= 0:
+        step = batch_size
+        temporal_overlap = 0
+    
+    # Find all valid 4n+1 batch sizes up to total_frames
+    valid_sizes = [i for i in range(1, total_frames + 1) if i % 4 == 1]
+    
+    # Best batch: largest valid size ≤ total_frames (maximizes temporal stability)
+    best_batch = max(valid_sizes) if valid_sizes else 1
+    
+    # Calculate padding waste for current batch_size
+    padding_waste = 0
+    current_frame = 0
+    
+    while current_frame < total_frames:
+        frames_in_batch = min(batch_size, total_frames - current_frame)
+        
+        # Find next 4n+1 target
+        if frames_in_batch % 4 == 1:
+            target = frames_in_batch
+        else:
+            target = ((frames_in_batch - 1) // 4 + 1) * 4 + 1
+        
+        padding_waste += target - frames_in_batch
+        current_frame += step if step > 0 else batch_size
+    
+    return {
+        'step': step,
+        'temporal_overlap': temporal_overlap,
+        'best_batch': best_batch,
+        'padding_waste': padding_waste,
+        'is_optimal': padding_waste == 0
+    }
 
 
 def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, temporal_overlap, debug,
@@ -129,14 +238,6 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Use adaptive autocast for optimal performance
     with torch.no_grad():
-        # Restore timesteps to GPU if they were offloaded
-        if preserve_vram and hasattr(runner, 'sampling_timesteps') and hasattr(runner.sampling_timesteps, 'timesteps'):
-            if not runner.sampling_timesteps.timesteps.is_cuda:
-                debug.log("Restoring timesteps tensor to GPU (preserve_vram)", category="general")
-                debug.start_timer("timesteps_to_gpu")
-                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.to(device, non_blocking=False)
-                debug.end_timer("timesteps_to_gpu", "Sampling timesteps restored to GPU")
-        
         with torch.autocast(str(get_device()), autocast_dtype, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
@@ -146,15 +247,6 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
                 use_blockswap=use_blockswap,
                 **text_embeds_dict,
             )
-    
-    # Clean up diffusion timesteps from GPU if preserve_vram is enabled
-    if preserve_vram:
-        if hasattr(runner, 'sampling_timesteps') and hasattr(runner.sampling_timesteps, 'timesteps'):
-            if runner.sampling_timesteps.timesteps.is_cuda:
-                debug.log("Moving timesteps tensor to CPU (preserve_vram)", category="general")
-                debug.start_timer("timesteps_to_cpu")
-                runner.sampling_timesteps.timesteps = runner.sampling_timesteps.timesteps.cpu()
-                debug.end_timer("timesteps_to_cpu", "Sampling timesteps offloaded to CPU")
     
     # Process samples with advanced optimization
     samples = optimized_video_rearrange(video_tensors)
@@ -202,7 +294,7 @@ def cut_videos(videos):
 
 def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_size=90, 
                    preserve_vram=False, temporal_overlap=0, debug=None, 
-                   block_swap_config=None, progress_callback=None):
+                   progress_callback=None):
     """
     Main generation loop with context-aware temporal processing
     
@@ -216,7 +308,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         preserve_vram (str/bool): VRAM preservation mode
         temporal_overlap (int): Frames for temporal continuity
         debug (bool): Debug mode
-        block_swap_config (dict): Optional BlockSwap configuration
         progress_callback (callable): Optional callback for progress reporting
         
     Returns:
@@ -236,118 +327,104 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     
     device = get_device() if (torch.cuda.is_available() or torch.mps.is_available()) else "cpu"
 
-    # ───────────────────────────────────────────────────────────────
-    # Step 1: Model Configuration & Precision Detection
-    # ───────────────────────────────────────────────────────────────
-    debug.log("━━━━━━━━━ Step 1: Model Configuration ━━━━━━━━━", category="none")
-    debug.start_timer("model_config")
-    debug.log("Configuring model precision and sampling parameters...", category="setup")
+    # ────────────────────────────────────────────────────────────────────────
+    # Step 1: Generation Setup - Precision & Parameters Configuration
+    # ────────────────────────────────────────────────────────────────────────────────
+    debug.log(f"", category="none")
+    debug.log("━━━━━━━━━ Step 1: Generation Setup ━━━━━━━━━", category="none")
+    debug.start_timer("generation_setup")
+    debug.log("Configuring generation parameters and precision settings...", category="setup")
 
     # Adaptive model dtype detection for maximum performance
-    model_dtype = None
+    dit_dtype = None
+    vae_dtype = None
     try:
-        # Get real dtype of loaded DiT model
-        model_dtype = next(runner.dit.parameters()).dtype
+        # Get real dtype of loaded models
+        dit_dtype = next(runner.dit.parameters()).dtype
+        vae_dtype = next(runner.vae.parameters()).dtype
         
-        # Adapt dtypes according to model
-        if model_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-            # For FP8, use BFloat16 for intermediate calculations (compatible)
+        # Use BFloat16 for all models
+        # - FP8 models: BFloat16 required for arithmetic operations
+        # - FP16 models: BFloat16 provides better numerical stability and prevents black frames
+        # - BFloat16 models: Already optimal
+        if dit_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             compute_dtype = torch.bfloat16
             autocast_dtype = torch.bfloat16
-            vae_dtype = torch.bfloat16  # VAE stays BFloat16 for compatibility
-        elif model_dtype == torch.float16:
-            compute_dtype = torch.float16
-            autocast_dtype = torch.float16
-            vae_dtype = torch.float16
+        elif dit_dtype == torch.float16:
+            compute_dtype = torch.bfloat16
+            autocast_dtype = torch.bfloat16
         else:  # BFloat16 or others
             compute_dtype = torch.bfloat16
             autocast_dtype = torch.bfloat16
-            vae_dtype = torch.bfloat16
-        debug.log(f"Model precision: model={model_dtype}, compute={compute_dtype}, autocast={autocast_dtype}, vae={vae_dtype}", category="precision")
+        debug.log(f"Model precision: DiT={dit_dtype}, VAE={vae_dtype}, compute={compute_dtype}, autocast={autocast_dtype}", category="precision")
             
     except Exception as e:
-        debug.log(f"Could not detect model dtype: {e}, falling back to BFloat16", level="WARNING", category="model", force=True)
-        model_dtype = torch.bfloat16
+        debug.log(f"Could not detect model dtypes: {e}, falling back to BFloat16", level="WARNING", category="model", force=True)
+        dit_dtype = torch.bfloat16
+        vae_dtype = torch.bfloat16
         compute_dtype = torch.bfloat16
         autocast_dtype = torch.bfloat16
-        vae_dtype = torch.bfloat16
-
-    # Optimization tips for users
-    if torch.cuda.is_available() or torch.mps.is_available():
-        total_frames = len(images)
-        optimal_batches = [x for x in [i for i in range(1, 200) if i % 4 == 1] if x <= total_frames]
-        if optimal_batches:
-            best_batch = max(optimal_batches)
-            if best_batch != batch_size:
-                debug.log("", category="none")
-                debug.log(f"TIP: For {total_frames} frames, use batch_size={best_batch} to avoid padding", category="tip", force=True)
-                if batch_size not in optimal_batches:
-                    padding_waste = sum(((i // 4) + 1) * 4 + 1 - i for i in range(batch_size, total_frames, batch_size))
-                    debug.log(f"   Currently: ~{padding_waste} wasted padding frames", category="info", force=True)
 
     # Configure classifier-free guidance
     runner.config.diffusion.cfg.scale = cfg_scale
     runner.config.diffusion.cfg.rescale = 0.0
     # Configure sampling steps
     runner.config.diffusion.timesteps.sampling.steps = 1
-    runner.configure_diffusion()
-
+    runner.configure_diffusion(dtype=compute_dtype)
     # Set random seed
     set_seed(seed)
-    debug.end_timer("model_config", "Model configuration", show_breakdown=True)
-    debug.log_memory_state("After model configuration", detailed_tensors=False)
-
-    # ───────────────────────────────────────────────────────────────
-    # Step 2: Input Preparation & Transformation Setup
-    # ───────────────────────────────────────────────────────────────
-    debug.log("\n━━━━━━━━━ Step 2: Input Preparation ━━━━━━━━━", category="none")
-    debug.start_timer("input_prep")
-
-    debug.log("Configuring video transformation pipeline...", category="setup")
+    # Video transformation pipeline configuration
     debug.log(f"Target resolution: {res_w}px width", category="info")
 
     # Advanced video transformation pipeline
-    video_transform = Compose([
-        NaResize(
-            resolution=(res_w),
-            mode="side",
-            # Upsample image, model only trained for high res
-            downsample_only=False,
-        ),
-        Lambda(lambda x: torch.clamp(x, 0.0, 1.0)),
-        DivisibleCrop((16, 16)),
-        Normalize(0.5, 0.5),
-        Lambda(lambda x: x.permute(1, 0, 2, 3)),  # t c h w -> c t h w (faster than Rearrange)
-    ])
+    video_transform = prepare_video_transforms(res_w)
 
     # Initialize generation state
     batch_samples = []
-    final_tensor = None
     
-    # Load text embeddings with adaptive dtype
-    text_pos_embeds = torch.load(os.path.join(script_directory, 'pos_emb.pt')).to(device, dtype=compute_dtype)
-    text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(device, dtype=compute_dtype)
-    text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
+    # Load text embeddings
+    debug.log(f"Loading text embeddings to {str(device).upper()}", category="general")
+    debug.start_timer("text_embeddings_load")
+    text_embeds = load_text_embeddings(script_directory, device, compute_dtype)
+    debug.end_timer("text_embeddings_load", "Text embeddings loading")
     
-    # Memory cleanup
-    clear_memory(debug=debug, deep=True, force=True)
+    # Calculate batch parameters
+    total_frames = len(images)
+    batch_params = calculate_optimal_batch_params(total_frames, batch_size, temporal_overlap)
+    step = batch_params['step']
+    temporal_overlap = batch_params['temporal_overlap']
 
-    debug.end_timer("input_prep", "Input preparation", show_breakdown=True)
-    debug.log_memory_state("After input preparation", detailed_tensors=False)
+    # Optimization tips for users (only shown for GPU/MPS users)
+    if torch.cuda.is_available() or torch.mps.is_available():
+        if batch_params['padding_waste'] > 0:
+            debug.log(f"", category="none", force=True)
+            debug.log(f"Batch processing notice for {total_frames} frames with batch_size={batch_size}:", category="info", force=True)
+            debug.log(f"   Padding waste: {batch_params['padding_waste']} (wasted computation)", category="info", force=True)
+            debug.log(f"   Why padding? Each batch must be 4n+1 frames (1, 5, 9, 13, 17, 21, ...)", category="info", force=True)
+            debug.log(f"   Current batch_size creates partial batches that need padding to meet this constraint", category="info", force=True)
+            
+        if batch_params['best_batch'] != batch_size:
+            debug.log(f"", category="none", force=True)
+            debug.log(f"TIP: For {total_frames} frames, use batch_size={batch_params['best_batch']} for better efficiency", category="tip", force=True)
+            debug.log(f"", category="none", force=True)
+            debug.log(f"Considerations:", category="info", force=True)
+            debug.log(f"   Smaller batches: More flickering BUT uses less memory", category="info", force=True)
+            debug.log(f"   Larger batches: Better temporal coherence BUT uses more memory", category="info", force=True)
+            debug.log(f"   Padding waste: Increases memory usage and processing time unnecessarily", category="info", force=True)
+            debug.log(f"", category="none")
+
+    debug.end_timer("generation_setup", "Generation setup", show_breakdown=True)
+    debug.log_memory_state("After generation setup", show_tensors=True, detailed_tensors=False)
+
     
     # ───────────────────────────────────────────────────────────────
-    # Step 3: Batch Processing
+    # Step 2: Batch Processing
     # ───────────────────────────────────────────────────────────────
-    debug.log("\n━━━━━━━━━ Step 3: Batch Processing ━━━━━━━━━", category="none")
+    debug.log("", category="none")
+    debug.log("━━━━━━━━━ Step 2: Batch Processing ━━━━━━━━━", category="none")
     debug.start_timer("batch_processing")
     
     # Standard processing (non-TileVAE) continues below
-    
-    # Calculate processing parameters
-    step = batch_size - temporal_overlap
-    if step <= 0:
-        step = batch_size
-        temporal_overlap = 0
     
     # Calculate total batches for progress reporting
     total_batches = len(range(0, len(images), step))
@@ -387,18 +464,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             # Use timer context for this batch - all timers within will be namespaced
             with debug.timer_context(f"batch_{batch_number}"):
                 debug.start_timer("batch")  # This becomes "batch_1_batch" internally
-            
-                # Move text embeddings back to GPU if they were offloaded
-                if preserve_vram or (block_swap_config and block_swap_config.get("offload_io_components", False)):
-                    if text_pos_embeds.device.type == "cpu":
-                        reason = "preserve_vram" if preserve_vram else "BlockSwap I/O offload"
-                        debug.log(f"Restoring text embeddings to GPU ({reason} active)", category="general")
-                        debug.start_timer("text_embeddings_to_gpu")
-                        text_pos_embeds = text_pos_embeds.to(device, dtype=compute_dtype)
-                        text_neg_embeds = text_neg_embeds.to(device, dtype=compute_dtype)
-                        text_embeds["texts_pos"][0] = text_pos_embeds
-                        text_embeds["texts_neg"][0] = text_neg_embeds
-                        debug.end_timer("text_embeddings_to_gpu", "Text embeddings restored to GPU")
                 
                 # Process current batch
                 video = images[start_idx:end_idx]
@@ -416,30 +481,31 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 
                 
                 if len(images) >= 5 and t % 4 != 1:
-                    debug.log(f"Transformed video shape before cut: {transformed_video.shape}", category="video")
+                    debug.log(f"Video frames before padding: {transformed_video.shape[1]} frames (shape: {transformed_video.shape})", category="video")
+                    debug.log("Applying frame padding to satisfy model constraint (frames % 4 == 1)", category="info")
                     transformed_video = cut_videos(transformed_video)
-                    debug.log(f"Transformed video shape: {transformed_video.shape}", category="video")
+                    debug.log(f"Video frames after padding: {transformed_video.shape[1]} frames (shape: {transformed_video.shape})", category="video")
                 
                 # Context-aware temporal strategy
                 # First batch: standard complete diffusion
 
                 # Move VAE to GPU if needed for encoding
                 manage_model_device(model=runner.vae, target_device=str(device), model_name="VAE", preserve_vram=False, debug=debug)
-                debug.log(f"VAE encoding precision: {autocast_dtype}", category="precision")
+
                 debug.log("Encoding video to latents...", category="vae")
                 debug.log(f"Original batch shape: {video.shape[1:]} frames @ {images[0].shape[0]}x{images[0].shape[1]}", category="info")
                 debug.log(f"Transformed video shape: {transformed_video.shape}", category="info")
                 del video
                 debug.start_timer("vae_encoding")
-                with torch.autocast(str(device), autocast_dtype, enabled=True):
-                    cond_latents = runner.vae_encode([transformed_video])
+                # VAE will use its configured dtype from model_manager
+                cond_latents = runner.vae_encode([transformed_video])
                 debug.end_timer("vae_encoding", "VAE encoding")
                 
                 # Move VAE back to CPU after encoding if preserve_vram is enabled
                 if preserve_vram:
                     manage_model_device(model=runner.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=debug)
                 
-                debug.log_memory_state("After VAE encode", detailed_tensors=False)
+                debug.log_memory_state("After VAE encode", show_tensors=False, detailed_tensors=False)
 
                 debug.log("Starting inference upscale...", category="generation")
 
@@ -450,13 +516,12 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                                         debug=debug,
                                         compute_dtype=compute_dtype,
                                         autocast_dtype=autocast_dtype)
-                #del cond_latents
+
                 del cond_latents
                 
                 # Post-process samples
                 sample = samples[0]
                 del samples 
-                #del samples
                 if ori_lengths[0] < sample.shape[0]:
                     sample = sample[:ori_lengths[0]]
                 #if temporal_overlap > 0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
@@ -488,17 +553,6 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                     progress_callback(batch_count+1, total_batches, current_frames, "Processing batch...")
                 #transformed_video = transformed_video.to("cpu")
                 #print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
-                # Clean VRAM after each batch when preserve_vram is active
-                if preserve_vram or (block_swap_config and block_swap_config.get("offload_io_components", False)):
-                    # Move text embeddings to CPU when using memory-saving features
-                    reason = "preserve_vram" if preserve_vram else "BlockSwap I/O offload"
-                    debug.log(f"Moving text embeddings to CPU ({reason})", category="general")
-                    debug.start_timer("text_embeddings_to_cpu")
-                    text_pos_embeds = text_pos_embeds.to("cpu")
-                    text_neg_embeds = text_neg_embeds.to("cpu")
-                    text_embeds["texts_pos"][0] = text_pos_embeds
-                    text_embeds["texts_neg"][0] = text_neg_embeds
-                    debug.end_timer("text_embeddings_to_cpu", "Text embeddings moved to CPU")
                     
                 # Log memory state at the end of each batch
                 debug.end_timer("batch", f"Batch {batch_number} processed", show_breakdown=True)
@@ -509,19 +563,18 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
         debug.log(f"━━━ Batch generation cleanup ━━━", category="none")
         debug.start_timer("generation_cleanup")
         
-        # Clean up local text embeddings
-        embeddings_to_clean = []
-        names_to_log = []
-        
-        if 'text_pos_embeds' in locals() and text_pos_embeds is not None:
-            embeddings_to_clean.append(text_pos_embeds)
-            names_to_log.append("text_pos_embeds")
-        
-        if 'text_neg_embeds' in locals() and text_neg_embeds is not None:
-            embeddings_to_clean.append(text_neg_embeds)
-            names_to_log.append("text_neg_embeds")
-        
-        release_text_embeddings(*embeddings_to_clean, debug=debug, names=names_to_log)
+        # Clean up text embeddings
+        if 'text_embeds' in locals() and text_embeds is not None:
+            embeddings_to_clean = []
+            names_to_log = []
+            
+            for key, embeds_list in text_embeds.items():
+                if embeds_list:
+                    embeddings_to_clean.extend(embeds_list)
+                    names_to_log.append(key)
+            
+            release_text_embeddings(*embeddings_to_clean, debug=debug, names=names_to_log)
+            del text_embeds
         
         # Clean up video transform
         if 'video_transform' in locals() and video_transform is not None:
@@ -536,9 +589,10 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     debug.end_timer("batch_processing", "Batch processing", show_breakdown=True)
     
     # ───────────────────────────────────────────────────────────────
-    # Step 4: Final Post-processing & Memory Optimization
+    # Step 3: Final Post-processing & Memory Optimization
     # ───────────────────────────────────────────────────────────────
-    debug.log("\n━━━━━━━━━ Step 4: Final Post-processing ━━━━━━━━━", category="none")
+    debug.log("", category="none", force=True)
+    debug.log("━━━━━━━━━ Step 3: Final Post-processing ━━━━━━━━━", category="none")
     debug.start_timer("post_processing")
     
     # OPTIMISATION ULTIME : Pré-allocation et copie directe (évite les torch.cat multiples)
@@ -603,94 +657,3 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
     debug.log_memory_state("After post-processing", detailed_tensors=False)
     
     return final_video_images
-
-
-def prepare_video_transforms(res_w):
-    """
-    Prepare optimized video transformation pipeline
-    
-    Args:
-        res_w (int): Target resolution width
-        
-    Returns:
-        Compose: Configured transformation pipeline
-        
-    Features:
-        - Resolution-aware upscaling (no downsampling)
-        - Proper normalization for model compatibility
-        - Memory-efficient tensor operations
-    """
-    return Compose([
-        NaResize(
-            resolution=(res_w),
-            mode="side",
-            downsample_only=False,  # Model trained for high resolution
-        ),
-        Lambda(lambda x: torch.clamp(x, 0.0, 1.0)),
-        DivisibleCrop((16, 16)),
-        Normalize(0.5, 0.5),
-        Lambda(lambda x: x.permute(1, 0, 2, 3)),  # t c h w -> c t h w
-    ])
-
-
-def load_text_embeddings(script_directory, device, dtype):
-    """
-    Load and prepare text embeddings for generation
-    
-    Args:
-        script_directory (str): Script directory path
-        device (str): Target device
-        dtype (torch.dtype): Target dtype
-        
-    Returns:
-        dict: Text embeddings dictionary
-        
-    Features:
-        - Adaptive dtype handling
-        - Device-optimized loading
-        - Memory-efficient embedding preparation
-    """
-    text_pos_embeds = torch.load(os.path.join(script_directory, 'pos_emb.pt')).to(device, dtype=dtype)
-    text_neg_embeds = torch.load(os.path.join(script_directory, 'neg_emb.pt')).to(device, dtype=dtype)
-    
-    return {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
-
-
-def calculate_optimal_batch_params(total_frames, batch_size, temporal_overlap):
-    """
-    Calculate optimal batch processing parameters
-    
-    Args:
-        total_frames (int): Total number of frames
-        batch_size (int): Desired batch size
-        temporal_overlap (int): Temporal overlap frames
-        
-    Returns:
-        dict: Optimized parameters and recommendations
-        
-    Features:
-        - 4n+1 constraint optimization
-        - Padding waste calculation
-        - Performance recommendations
-    """
-    step = batch_size - temporal_overlap
-    if step <= 0:
-        step = batch_size
-        temporal_overlap = 0
-    
-    # Find optimal batch sizes (4n+1 constraint)
-    optimal_batches = [x for x in [i for i in range(1, 200) if i % 4 == 1] if x <= total_frames]
-    best_batch = max(optimal_batches) if optimal_batches else 1
-    
-    # Calculate potential padding waste
-    padding_waste = 0
-    if batch_size not in optimal_batches:
-        padding_waste = sum(((i // 4) + 1) * 4 + 1 - i for i in range(batch_size, total_frames, batch_size))
-    
-    return {
-        'step': step,
-        'temporal_overlap': temporal_overlap,
-        'best_batch': best_batch,
-        'padding_waste': padding_waste,
-        'is_optimal': batch_size in optimal_batches
-    } 

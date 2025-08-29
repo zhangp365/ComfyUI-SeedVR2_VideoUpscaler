@@ -177,7 +177,7 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
                 should_clear = True
                 if debug:
                     backend = "MPS" if torch.mps.is_available() else "VRAM"
-                    debug.log(f"{backend} pressure: {mem_info['free_gb']:.1f}GB free of {mem_info['total_gb']:.1f}GB", category="memory")
+                    debug.log(f"{backend} pressure: {mem_info['free_gb']:.2f}GB free of {mem_info['total_gb']:.2f}GB", category="memory")
         
         # For non-MPS systems, also check system RAM separately
         if not should_clear and not torch.mps.is_available():
@@ -185,7 +185,7 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
             if mem.available < mem.total * 0.15:
                 should_clear = True
                 if debug:
-                    debug.log(f"RAM pressure: {mem.available/(1024**3):.1f}GB free of {mem.total/(1024**3):.1f}GB", category="memory")
+                    debug.log(f"RAM pressure: {mem.available/(1024**3):.2f}GB free of {mem.total/(1024**3):.2f}GB", category="memory")
         
         if not should_clear:
             return
@@ -263,106 +263,63 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
         debug.end_timer("memory_clear", "clear_memory() completion")
 
 
+def retry_on_oom(func, *args, debug=None, operation_name="operation", **kwargs):
+    """
+    Execute function with single OOM retry after memory cleanup.
+    
+    Args:
+        func: Callable to execute
+        *args: Positional arguments for func
+        debug: Debug instance for logging (optional)
+        operation_name: Name for logging
+        **kwargs: Keyword arguments for func
+    
+    Returns:
+        Result of func(*args, **kwargs)
+    """
+    try:
+        return func(*args, **kwargs)
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        # Only handle OOM errors
+        if not any(x in str(e).lower() for x in ["out of memory", "allocation on device"]):
+            raise
+        
+        if debug:
+            debug.log(f"OOM during {operation_name}: {e}", level="WARNING", category="memory", force=True)
+            debug.log(f"Clearing memory and retrying", category="info", force=True)
+        
+        # Clear memory
+        clear_memory(debug=debug, deep=True, force=True)
+        # Let memory settle
+        time.sleep(0.5)
+        debug.log_memory_state("After memory clearing", show_tensors=True, detailed_tensors=False)
+        
+        # Single retry
+        try:
+            result = func(*args, **kwargs)
+            if debug:
+                debug.log(f"Retry successful for {operation_name}", category="success", force=True)
+            return result
+        except Exception as retry_e:
+            if debug:
+                debug.log(f"Retry failed for {operation_name}: {retry_e}", level="ERROR", category="memory", force=True)
+            raise
+
+
 def reset_vram_peak(debug: Optional[Any]) -> None:
     """
     Reset VRAM peak memory statistics for fresh tracking.
     """
-    debug.log("Resetting VRAM peak memory statistics", category="memory")
+    if debug and debug.enabled:
+        debug.log("Resetting VRAM peak memory statistics", category="memory")
     try:
         if torch.cuda.is_available():
             device = get_device()
             torch.cuda.reset_peak_memory_stats(device)
         # MPS doesn't support peak memory reset
     except Exception as e:
-        debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
-
-def preinitialize_rope_cache(runner: Any, debug: Optional[Any]) -> None:
-    """
-    🚀 Pre-initialize RoPE cache to avoid OOM at first launch
-    
-    Args:
-        runner: The model runner containing DiT and VAE models
-        debug: Optional Debug instance
-    """
-    
-    debug.log("Pre-initializing RoPE cache to avoid OOM...", category="setup")
-
-    try:
-        # Create dummy tensors to simulate common shapes
-        # Format: [batch, channels, frames, height, width] for vid_shape
-        # Format: [batch, seq_len] for txt_shape
-        common_shapes = [
-            # Common video resolutions
-            (torch.tensor([[1, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 1 frame, 77 tokens
-            (torch.tensor([[4, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 4 frames
-            (torch.tensor([[5, 3, 3]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # 5 frames (4n+1 format)
-            (torch.tensor([[1, 4, 4]], dtype=torch.long), torch.tensor([[77]], dtype=torch.long)),    # Higher resolution
-        ]
-        
-        # Create mock cache for pre-initialization
-            
-        temp_cache = Cache()
-        
-        # Access RoPE modules in DiT (recursive search)
-        def find_rope_modules(module):
-            rope_modules = []
-            for name, child in module.named_modules():
-                if hasattr(child, 'get_freqs') and callable(getattr(child, 'get_freqs')):
-                    rope_modules.append((name, child))
-            return rope_modules
-        
-        rope_modules = find_rope_modules(runner.dit)
-        
-        # Pre-calculate for each RoPE module found
-        for name, rope_module in rope_modules:
-            # Temporarily move module to CPU if necessary
-            original_device = next(rope_module.parameters()).device if list(rope_module.parameters()) else torch.device('cpu')
-            rope_module.to('cpu')
-            
-            try:
-                for vid_shape, txt_shape in common_shapes:
-                    cache_key = f"720pswin_by_size_bysize_{tuple(vid_shape[0].tolist())}_sd3.mmrope_freqs_3d"
-                    
-                    def compute_freqs():
-                        try:
-                            # Calculate with reduced dimensions to avoid OOM
-                            with torch.no_grad():
-                                # Detect RoPE module type
-                                module_type = type(rope_module).__name__
-                                
-                                if module_type == 'NaRotaryEmbedding3d':
-                                    # NaRotaryEmbedding3d: only takes shape (vid_shape)
-                                    return rope_module.get_freqs(vid_shape.cpu())
-                                else:
-                                    # Standard RoPE: takes vid_shape and txt_shape
-                                    return rope_module.get_freqs(vid_shape.cpu(), txt_shape.cpu())
-                                    
-                        except Exception as e:
-                            debug.log(f"Failed pre-initializing RoPE cache for {cache_key}: {e}", level="ERROR", category="setup", force=True)
-                            # Return empty tensors as fallback
-                            clear_memory(debug=debug, deep=True, force=True)
-                            time.sleep(1)
-
-                            return torch.zeros(1, 64)
-                    
-                    # Store in cache
-                    temp_cache(cache_key, compute_freqs)
-                
-            except Exception as e:
-                debug.log(f"Error in module {name}: {e}", level="ERROR", category="setup", force="True")
-            finally:
-                # Restore to original device
-                rope_module.to(original_device)
-        
-        # Copy temporary cache to runner cache
-        if hasattr(runner, 'cache'):
-            runner.cache.cache.update(temp_cache.cache)
-        else:
-            runner.cache = temp_cache
-        
-    except Exception as e:
-        debug.log(f"Error during RoPE pre-init: {e}", level="ERROR", category="setup", force=True)
-        debug.log("Model will work but could have OOM at first launch", level="WARNING", category="info", force=True)
+        if debug and debug.enabled:
+            debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
 
 
 def clear_rope_lru_caches(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> int:
@@ -462,10 +419,13 @@ def release_model_memory(model: Optional[torch.nn.Module], debug: Optional[Any] 
             debug.log(f"Failed to release model memory: {e}", level="WARNING", category="memory", force=True)
 
 
-def manage_model_device(model, target_device: str, model_name: str = "model",
-                       preserve_vram: bool = False, debug=None, reason: str = None) -> bool:
+def manage_model_device(model: Optional[torch.nn.Module], target_device: str, 
+                       model_name: str = "model", preserve_vram: bool = False, 
+                       debug: Optional[Any] = None, reason: Optional[str] = None,
+                       runner: Optional[Any] = None) -> bool:
     """
     Unified model device management with intelligent movement and logging.
+    Handles BlockSwap-enabled models transparently.
     
     Args:
         model: The model to move
@@ -474,12 +434,22 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
         preserve_vram: Whether preserve_vram mode is active
         debug: Debug instance for logging
         reason: Optional custom reason for the movement
+        runner: Optional runner instance for BlockSwap detection
         
     Returns:
         bool: True if model was moved, False if already on target device
     """
     if model is None:
         return False
+    
+    # Check if this is a BlockSwap-enabled DiT model
+    is_blockswap_model = False
+    actual_model = model
+    if runner and model_name == "DiT" and hasattr(runner, "_blockswap_active") and runner._blockswap_active:
+        is_blockswap_model = True
+        # Get the actual model (handle FP8CompatibleDiT wrapper)
+        if hasattr(model, "dit_model"):
+            actual_model = model.dit_model
     
     # Get current device
     try:
@@ -489,38 +459,186 @@ def manage_model_device(model, target_device: str, model_name: str = "model",
     
     # Normalize device strings for comparison
     target_type = target_device.split(':')[0] if ':' in target_device else target_device
-    current_type = str(current_device.type)
+    current_type_upper = str(current_device.type).upper()
+    target_device_upper = target_device.upper()
     
-    # Skip if already on target device
-    if current_type == target_type:
+    # Skip if already on target device (unless BlockSwap needs reconfiguration)
+    if current_type_upper == target_device_upper and not is_blockswap_model:
         return False
+        
+    # Handle BlockSwap models specially
+    if is_blockswap_model:
+        return _handle_blockswap_model_movement(
+            runner, actual_model, current_device, target_device, target_type,
+            model_name, debug, reason
+        )
     
+    # Standard model movement (non-BlockSwap)
+    return _standard_model_movement(
+        model, current_device, target_device, target_type, model_name,
+        preserve_vram, debug, reason, target_device_upper
+    )
+
+
+def _handle_blockswap_model_movement(runner: Any, model: torch.nn.Module, 
+                                    current_device: torch.device, target_device: str, 
+                                    target_type: str, model_name: str,
+                                    debug: Optional[Any], reason: Optional[str]) -> bool:
+    """
+    Handle device movement for BlockSwap-enabled models.
+    
+    Args:
+        runner: Runner instance with BlockSwap configuration
+        model: Model to move (actual unwrapped model)
+        current_device: Current device of the model
+        target_device: Target device string
+        target_type: Target device type (cpu/cuda)
+        model_name: Model name for logging
+        debug: Debug instance
+        reason: Movement reason
+        
+    Returns:
+        bool: True if model was moved
+    """
+    # Import BlockSwap function (avoid circular import)
+    from src.optimization.blockswap import set_blockswap_bypass
+    
+    if target_type == "cpu":
+        # Moving to CPU (offload)
+        if debug:
+            current_device_str = str(current_device).upper()
+            debug.log(f"Moving {model_name} from {current_device_str} to {target_device.upper()} ({reason or 'preserve_vram'})", category="general")
+        
+        # Enable bypass to allow movement
+        set_blockswap_bypass(runner=runner, bypass=True, debug=debug)
+        
+        # Start timer
+        timer_name = f"{model_name.lower()}_to_cpu"
+        if debug:
+            debug.start_timer(timer_name)
+        
+        # Move entire model to CPU
+        model.to("cpu")
+        model.zero_grad(set_to_none=True)
+        
+        if debug:
+            debug.end_timer(timer_name, "BlockSwap model offloaded to CPU")
+        
+        return True
+        
+    else:
+        # Moving to GPU (reload)
+        # Check if we're in bypass mode (coming from preserve_vram offload)
+        if not getattr(runner, "_blockswap_bypass_protection", False):
+            # Not in bypass mode, blocks are already configured
+            return False
+        
+        if debug:
+            debug.log(f"Moving DiT from CPU to {target_device.upper()} ({reason or 'inference requirement'})", category="general")
+        
+        timer_name = f"{model_name.lower()}_to_gpu"
+        if debug:
+            debug.start_timer(timer_name)
+        
+        # Restore blocks to their configured devices
+        if hasattr(model, "blocks") and hasattr(model, "blocks_to_swap"):
+            device = str(target_device)
+            
+            # Move blocks according to BlockSwap configuration
+            for b, block in enumerate(model.blocks):
+                if b > model.blocks_to_swap:
+                    # This block should be on GPU
+                    block.to(device)
+                else:
+                    # This block stays on CPU (will be swapped during forward)
+                    block.to("cpu")
+            
+            # Handle I/O components
+            if not runner._block_swap_config.get("offload_io_components", False):
+                # I/O components should be on GPU if not offloaded
+                for name, module in model.named_children():
+                    if name != "blocks":
+                        module.to(device)
+            else:
+                # I/O components stay on CPU (will be swapped during forward)
+                for name, module in model.named_children():
+                    if name != "blocks":
+                        module.to("cpu")
+            
+            if debug:
+                # Get actual configuration from runner
+                if hasattr(runner, '_block_swap_config'):
+                    blocks_on_gpu = runner._block_swap_config.get('total_blocks', 32) - runner._block_swap_config.get('blocks_swapped', 16)
+                    total_blocks = runner._block_swap_config.get('total_blocks', 32)
+                    main_device = runner._block_swap_config.get('main_device', 'GPU')
+                    debug.log(f"BlockSwap blocks restored to configured devices ({blocks_on_gpu}/{total_blocks} blocks on {main_device.upper()})", category="success")
+                else:
+                    debug.log("BlockSwap blocks restored to configured devices", category="success")
+
+        
+        # Disable bypass, re-enable protection
+        set_blockswap_bypass(runner=runner, bypass=False, debug=debug)
+        
+        if debug:
+            debug.end_timer(timer_name, "BlockSwap model restored")
+        
+        return True
+
+
+def _standard_model_movement(model: torch.nn.Module, current_device: torch.device,
+                            target_device: str, target_type: str,
+                            model_name: str, preserve_vram: bool, 
+                            debug: Optional[Any], reason: Optional[str],
+                            target_device_upper: str) -> bool:
+    """
+    Handle standard (non-BlockSwap) model movement.
+    
+    Args:
+        model: Model to move
+        current_device: Current device of the model
+        target_device: Target device string
+        target_type: Target device type
+        model_name: Model name for logging
+        preserve_vram: Whether in preserve_vram mode
+        debug: Debug instance
+        reason: Movement reason
+        target_device_upper: Target device type (uppercase)
+        
+    Returns:
+        bool: True if model was moved
+    """
     # Determine reason for movement
     if not reason:
         reason = "preserve_vram" if preserve_vram else "inference requirement"
     
+    # Log the movement with full device strings
+    if debug:
+        current_device_str = str(current_device).upper()
+        debug.log(f"Moving {model_name} from {current_device_str} to {target_device_upper} ({reason})", category="general")
+
     # Start timer based on direction
     timer_name = f"{model_name.lower()}_to_{'gpu' if target_type != 'cpu' else 'cpu'}"
     if debug:
         debug.start_timer(timer_name)
     
-    # Log the movement
-    if debug:
-        if target_type == 'cpu':
-            debug.log(f"Moving {model_name} to CPU ({reason})", category="general")
-        else:
-            debug.log(f"Moving {model_name} from {current_type} to {target_device} ({reason})", category="memory")
-    
     # Move model and clear gradients
     model.to(target_device)
     model.zero_grad(set_to_none=True)
     
+    # Clear VAE memory buffers when moving to CPU
+    if target_type == 'cpu' and model_name == "VAE":
+        cleared_count = 0
+        for module in model.modules():
+            if hasattr(module, 'memory') and module.memory is not None:
+                if torch.is_tensor(module.memory) and (module.memory.is_cuda or module.memory.is_mps):
+                    module.memory = None
+                    cleared_count += 1
+        if cleared_count > 0 and debug:
+            debug.log(f"Cleared {cleared_count} VAE memory buffers", category="success")
+    
     # End timer
     if debug:
-        if target_type == 'cpu':
-            debug.end_timer(timer_name, f"{model_name} moved to CPU")
-        else:
-            debug.end_timer(timer_name, f"{model_name} moved to GPU")
+        debug.end_timer(timer_name, f"{model_name} moved to {target_device_upper}")
     
     return True
 
@@ -615,7 +733,7 @@ def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool
     if hasattr(runner, "_blockswap_active") and runner._blockswap_active:
         # Import here to avoid circular dependency
         from src.optimization.blockswap import cleanup_blockswap
-        cleanup_blockswap(runner, keep_state_for_cache=keep_models_in_ram)
+        cleanup_blockswap(runner=runner, keep_state_for_cache=keep_models_in_ram)
     
     # 2. Clear all runtime caches
     clear_runtime_caches(runner=runner, debug=debug)
@@ -650,4 +768,8 @@ def complete_cleanup(runner: Any, debug: Optional[Any], keep_models_in_ram: bool
     
     # 4. Final memory cleanup
     clear_memory(debug=debug, deep=True, force=True)
+
+    # 5. Clearing cuBLAS workspaces
+    torch._C._cuda_clearCublasWorkspaces() if hasattr(torch._C, '_cuda_clearCublasWorkspaces') else None
+
     debug.log(f"Completed {cleanup_type}", category="success")
