@@ -380,7 +380,7 @@ class VideoDiffusionInfer():
             if latents[0].shape[0] > 1:
                 clear_memory(debug=self.debug, deep=True, force=True)
         
-        self.debug.log_memory_state("After inference upscale", detailed_tensors=False)
+        self.debug.log_memory_state("After inference upscale", show_tensors=False, detailed_tensors=False)
 
         # Move VAE to GPU if needed for decoding
         manage_model_device(model=self.vae, target_device=str(get_device()), model_name="VAE", preserve_vram=False, debug=self.debug)
@@ -396,7 +396,7 @@ class VideoDiffusionInfer():
         if preserve_vram:
             manage_model_device(model=self.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=self.debug)
         
-        self.debug.log_memory_state("After VAE decode", detailed_tensors=False)
+        self.debug.log_memory_state("After VAE decode", show_tensors=False, detailed_tensors=False)
         
         # Converting batch Float16 for ComfyUI (faster)
         if samples and len(samples) > 0 and samples[0].dtype != torch.float16:

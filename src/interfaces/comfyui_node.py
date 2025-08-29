@@ -195,7 +195,7 @@ class SeedVR2:
         debug.log("━━━━━━━━━ Model Preparation ━━━━━━━━━", category="none")
 
         # Initial memory state
-        debug.log_memory_state("Before model preparation", detailed_tensors=False)
+        debug.log_memory_state("Before model preparation", show_tensors=True, detailed_tensors=False)
         debug.start_timer("model_preparation")
 
         os.environ["LOCAL_RANK"] = 0 if device == "none" else device.split(":")[1]
@@ -283,7 +283,7 @@ class SeedVR2:
         
         # Log final memory state after ALL cleanup is done
         debug.end_timer("final_cleanup", "Final cleanup", show_breakdown=True)
-        debug.log_memory_state("After final cleanup", detailed_tensors=False)
+        debug.log_memory_state("After final cleanup", show_tensors=True, detailed_tensors=True)
         
         # Final timing summary
         debug.log("", category="none")

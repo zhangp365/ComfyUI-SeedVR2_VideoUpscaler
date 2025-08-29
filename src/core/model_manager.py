@@ -126,7 +126,6 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     
     # If we reach here, create a new runner
     debug.start_timer("config_load")
-    vram_info = get_basic_vram_info()
 
     # Select config based on model type   
     if "7b" in model:

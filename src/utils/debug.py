@@ -82,28 +82,30 @@ class Debug:
             category: Category for the message
             force: If True, always log regardless of enabled state (for critical messages)
         """
-        # Always log forced messages or if debugging is enabled
-        if force or self.enabled:
-            # Get icon for category, fallback to general icon
-            icon = self.CATEGORY_ICONS.get(category, self.CATEGORY_ICONS["general"])
-            
-            # Format prefix based on level
-            if level == "WARNING":
-                icon = self.CATEGORY_ICONS["warning"]
-            elif level == "ERROR":
-                icon = self.CATEGORY_ICONS["error"]
-            
-            # Build the log message with optional timestamp
-            if self.show_timestamps and self.enabled:
-                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                prefix = f"[{timestamp}] {icon}"
-            else:
-                prefix = f"{icon}"
-            
-            if level != "INFO":
-                prefix += f" [{level}]"
-            
-            print(f"{prefix} {message}")
+        # Always log forced messages or if debugging is enabled - early return if not
+        if not (self.enabled or force):
+            return
+        
+        # Get icon for category, fallback to general icon
+        icon = self.CATEGORY_ICONS.get(category, self.CATEGORY_ICONS["general"])
+        
+        # Format prefix based on level
+        if level == "WARNING":
+            icon = self.CATEGORY_ICONS["warning"]
+        elif level == "ERROR":
+            icon = self.CATEGORY_ICONS["error"]
+        
+        # Build the log message with optional timestamp
+        if self.show_timestamps:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            prefix = f"[{timestamp}] {icon}"
+        else:
+            prefix = f"{icon}"
+        
+        if level != "INFO":
+            prefix += f" [{level}]"
+        
+        print(f"{prefix} {message}")
     
 
     @contextmanager
@@ -241,7 +243,7 @@ class Debug:
         return duration
 
 
-    def log_memory_state(self, label: str, show_diff: bool = True, show_tensors: bool = True, 
+    def log_memory_state(self, label: str, show_diff: bool = True, show_tensors: bool = False, 
                         detailed_tensors: bool = False, force: bool = False) -> None:
         """
         Log current memory state with minimal overhead.

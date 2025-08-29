@@ -414,7 +414,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
             debug.log(f"", category="none")
 
     debug.end_timer("generation_setup", "Generation setup", show_breakdown=True)
-    debug.log_memory_state("After generation setup", detailed_tensors=False)
+    debug.log_memory_state("After generation setup", show_tensors=True, detailed_tensors=False)
 
     
     # ───────────────────────────────────────────────────────────────
@@ -505,7 +505,7 @@ def generation_loop(runner, images, cfg_scale=1.0, seed=666, res_w=720, batch_si
                 if preserve_vram:
                     manage_model_device(model=runner.vae, target_device='cpu', model_name="VAE", preserve_vram=preserve_vram, debug=debug)
                 
-                debug.log_memory_state("After VAE encode", detailed_tensors=False)
+                debug.log_memory_state("After VAE encode", show_tensors=False, detailed_tensors=False)
 
                 debug.log("Starting inference upscale...", category="generation")
 

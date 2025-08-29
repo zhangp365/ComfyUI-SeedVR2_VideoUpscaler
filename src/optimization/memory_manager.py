@@ -292,8 +292,7 @@ def retry_on_oom(func, *args, debug=None, operation_name="operation", **kwargs):
         clear_memory(debug=debug, deep=True, force=True)
         # Let memory settle
         time.sleep(0.5)
-
-        debug.log_memory_state("After memory clearing", detailed_tensors=False)
+        debug.log_memory_state("After memory clearing", show_tensors=True, detailed_tensors=False)
         
         # Single retry
         try:
@@ -311,14 +310,16 @@ def reset_vram_peak(debug: Optional[Any]) -> None:
     """
     Reset VRAM peak memory statistics for fresh tracking.
     """
-    debug.log("Resetting VRAM peak memory statistics", category="memory")
+    if debug and debug.enabled:
+        debug.log("Resetting VRAM peak memory statistics", category="memory")
     try:
         if torch.cuda.is_available():
             device = get_device()
             torch.cuda.reset_peak_memory_stats(device)
         # MPS doesn't support peak memory reset
     except Exception as e:
-        debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
+        if debug and debug.enabled:
+            debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
 
 
 def clear_rope_lru_caches(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> int:
