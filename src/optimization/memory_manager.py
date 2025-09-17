@@ -400,7 +400,7 @@ def manage_model_device(model: Optional[torch.nn.Module], target_device: str,
     
     Args:
         model: The model to move
-        target_device: Target device ('cuda:0', 'cpu', etc.)
+        target_device: Target device ('cuda', 'cpu', etc.)
         model_name: Name for logging (e.g., "VAE", "DiT")
         preserve_vram: Whether preserve_vram mode is active
         debug: Debug instance for logging

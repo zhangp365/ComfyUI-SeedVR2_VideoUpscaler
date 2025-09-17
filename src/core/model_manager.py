@@ -255,7 +255,7 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
     Args:
         runner: VideoDiffusionInfer instance to configure
         model_type: "dit" or "vae" - determines model configuration
-        device (str): Target device for inference (cuda:0, cpu, etc.)
+        device (str): Target device for inference (cuda, cpu, etc.)
         checkpoint_path (str): Path to model checkpoint (.safetensors or .pth)
         config: Model configuration object with dit/vae sub-configs
         preserve_vram (bool): Keep model on CPU to preserve VRAM

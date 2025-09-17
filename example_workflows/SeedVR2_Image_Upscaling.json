@@ -148,7 +148,7 @@
         false,
         false,
         false,
-        "cuda:0"
+        "cuda"
       ]
     },
     {
