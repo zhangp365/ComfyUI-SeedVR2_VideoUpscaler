@@ -50,11 +50,6 @@ class FP8CompatibleDiT(torch.nn.Module):
             self.debug.start_timer("_convert_rope_freqs")
             self._convert_rope_freqs()
             self.debug.end_timer("_convert_rope_freqs", "RoPE freqs conversion")
-            if torch.mps.is_available():
-                self.debug.log(f"Also converting NaDiT parameters/buffers for MPS backend", category="setup", force=True)
-                self.debug.start_timer("_force_nadit_bfloat16")
-                self._force_nadit_bfloat16()
-                self.debug.end_timer("_force_nadit_bfloat16", "NaDiT parameters/buffers conversion")
             
         # Apply RoPE stabilization for numerical stability
         self.debug.log(f"Stabilizing RoPE computations for numerical stability", category="setup")
@@ -93,10 +88,7 @@ class FP8CompatibleDiT(torch.nn.Module):
             if 'RotaryEmbedding' in type(module).__name__:
                 if hasattr(module, 'rope') and hasattr(module.rope, 'freqs'):
                     if module.rope.freqs.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                        if  module.rope.freqs.device.type == "mps":
-                            module.rope.freqs.data = module.rope.freqs.to("cpu").to(torch.bfloat16).to("mps")
-                        else:
-                            module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
+                        module.rope.freqs.data = module.rope.freqs.to(torch.bfloat16)
                         converted += 1
         self.debug.log(f"Converted {converted} RoPE frequency buffers from FP8 to BFloat16 for compatibility", category="success")
                         
@@ -110,24 +102,18 @@ class FP8CompatibleDiT(torch.nn.Module):
             if original_dtype is None:
                 original_dtype = param.dtype
             if param.dtype != torch.bfloat16:
-                if param.device.type == "mps":
-                    param_data = param.data.to("cpu").to(torch.bfloat16).to("mps")
-                else:
-                    param_data = param.data.to(torch.bfloat16)
+                param_data = param.data.to(torch.bfloat16)
                 param.data = param_data
                 converted_count += 1
                 
         # Also convert buffers
         for name, buffer in self.dit_model.named_buffers():
             if buffer.dtype != torch.bfloat16:
-                if param.device.type == "mps":
-                    buffer_data = buffer.data.to("cpu").to(torch.bfloat16).to("mps")
-                else:
-                    buffer_data = buffer.data.to(torch.bfloat16)
+                buffer_data = buffer.data.to(torch.bfloat16)
                 buffer.data = buffer_data
                 converted_count += 1
         
-        self.debug.log(f"Converted {converted_count} NaDiT parameters/buffers for MPS", category="success")
+        self.debug.log(f"Converted {converted_count} NaDiT parameters/buffers", category="success")
         
         # Update detected dtype
         self.model_dtype = torch.bfloat16
@@ -345,24 +331,17 @@ class FP8CompatibleDiT(torch.nn.Module):
             k = k.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             v = v.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             
-            if torch.mps.is_available():
+            # Use optimized SDPA
+            with torch.backends.cuda.sdp_kernel(
+                enable_flash=True,
+                enable_math=True,
+                enable_mem_efficient=True
+            ):
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=0.0,
                     is_causal=False
                 )
-            else:
-                # Use optimized SDPA
-                with torch.backends.cuda.sdp_kernel(
-                    enable_flash=True,
-                    enable_math=True,
-                    enable_mem_efficient=True
-                ):
-                    attn_output = torch.nn.functional.scaled_dot_product_attention(
-                        q, k, v,
-                        dropout_p=0.0,
-                        is_causal=False
-                    )
             
             # Reshape back
             attn_output = attn_output.transpose(1, 2).contiguous().view(

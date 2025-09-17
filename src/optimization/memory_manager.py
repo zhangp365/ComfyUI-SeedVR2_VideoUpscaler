@@ -22,11 +22,6 @@ def get_device_list():
       devs += [f"cuda:{i}" for i in range(torch.cuda.device_count())]
   except Exception:
     pass
-  try:
-    if hasattr(torch, "mps") and hasattr(torch.mps, "is_available") and torch.mps.is_available():
-      devs += [f"mps:{i}" for i in range(torch.mps.device_count())]
-  except Exception:
-    pass
   if len(devs) > 1:
     return devs[1:]
   return devs
@@ -44,12 +39,8 @@ def get_basic_vram_info() -> Dict[str, Any]:
         if torch.cuda.is_available():
             device = get_device()
             free_memory, total_memory = torch.cuda.mem_get_info(device)
-        elif torch.mps.is_available():
-            mem = psutil.virtual_memory()
-            free_memory = mem.total - mem.used
-            total_memory = mem.total
         else:
-            return {"error": "No GPU backend available (CUDA/MPS)"}
+            return {"error": "No GPU backend available (CUDA)"}
         
         return {
             "free_gb": free_memory / (1024**3),
@@ -62,7 +53,7 @@ def get_basic_vram_info() -> Dict[str, Any]:
 # Initial VRAM check at module load
 vram_info = get_basic_vram_info()
 if "error" not in vram_info:
-    backend = "MPS" if torch.mps.is_available() else "CUDA"
+    backend = "CUDA"
     print(f"📊 Initial {backend} memory: {vram_info['free_gb']:.2f}GB free / {vram_info['total_gb']:.2f}GB total")
 else:
     print(f"⚠️ Memory check failed: {vram_info['error']} - No available backend!")
@@ -86,11 +77,6 @@ def get_vram_usage(debug: Optional[Any] = None) -> Tuple[float, float, float]:
             allocated = torch.cuda.memory_allocated(device) / (1024**3)
             reserved = torch.cuda.memory_reserved(device) / (1024**3)
             max_allocated = torch.cuda.max_memory_allocated(device) / (1024**3)
-            return allocated, reserved, max_allocated
-        elif torch.mps.is_available():
-            allocated = torch.mps.current_allocated_memory() / (1024**3)
-            reserved = torch.mps.driver_allocated_memory() / (1024**3)
-            max_allocated = allocated  # MPS doesn't track peak separately
             return allocated, reserved, max_allocated
     except Exception as e:
         if debug:
@@ -171,16 +157,15 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
         mem_info = get_basic_vram_info()
         
         if "error" not in mem_info:
-            # Check VRAM/MPS memory pressure (15% free threshold)
+            # Check VRAM memory pressure (15% free threshold)
             free_ratio = mem_info["free_gb"] / mem_info["total_gb"]
             if free_ratio < 0.15:
                 should_clear = True
                 if debug:
-                    backend = "MPS" if torch.mps.is_available() else "VRAM"
-                    debug.log(f"{backend} pressure: {mem_info['free_gb']:.2f}GB free of {mem_info['total_gb']:.2f}GB", category="memory")
+                    debug.log(f"VRAM pressure: {mem_info['free_gb']:.2f}GB free of {mem_info['total_gb']:.2f}GB", category="memory")
         
-        # For non-MPS systems, also check system RAM separately
-        if not should_clear and not torch.mps.is_available():
+        # Also check system RAM separately
+        if not should_clear:
             mem = psutil.virtual_memory()
             if mem.available < mem.total * 0.15:
                 should_clear = True
@@ -203,8 +188,6 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-    elif torch.mps.is_available():
-        torch.mps.empty_cache()
     
     if debug:
         debug.end_timer("gpu_cache_clear", "GPU cache clearing")
@@ -240,17 +223,6 @@ def clear_memory(debug: Optional[Any] = None, deep: bool = False, force: bool = 
                 handle = _os_memory_lib.GetCurrentProcess()
                 _os_memory_lib.SetProcessWorkingSetSize(handle, -1, -1)
                 
-            elif torch.mps.is_available():
-                # macOS with MPS
-                import ctypes  # Import only when needed
-                import ctypes.util
-                if _os_memory_lib is None:
-                    libc_path = ctypes.util.find_library('c')
-                    if libc_path:
-                        _os_memory_lib = ctypes.CDLL(libc_path)
-                
-                if _os_memory_lib:
-                    _os_memory_lib.sync()
         except Exception as e:
             if debug:
                 debug.log(f"Failed to perform OS memory operations: {e}", level="WARNING", category="memory", force=True)
@@ -316,7 +288,6 @@ def reset_vram_peak(debug: Optional[Any]) -> None:
         if torch.cuda.is_available():
             device = get_device()
             torch.cuda.reset_peak_memory_stats(device)
-        # MPS doesn't support peak memory reset
     except Exception as e:
         if debug and debug.enabled:
             debug.log(f"Failed to reset peak memory stats: {e}", level="WARNING", category="memory", force=True)
@@ -356,7 +327,7 @@ def clear_rope_lru_caches(model: Optional[torch.nn.Module], debug: Optional[Any]
 def release_tensor_memory(tensor: Optional[torch.Tensor]) -> None:
     """Release tensor memory properly without CPU allocation"""
     if tensor is not None and torch.is_tensor(tensor):
-        if tensor.is_cuda or tensor.is_mps:
+        if tensor.is_cuda:
             # Release GPU memory directly without CPU transfer
             if tensor.numel() > 0:
                 tensor.data.set_()
@@ -381,7 +352,7 @@ def release_text_embeddings(*embeddings: torch.Tensor, debug: Optional[Any] = No
 
 def release_model_memory(model: Optional[torch.nn.Module], debug: Optional[Any] = None) -> None:
     """
-    Release all GPU/MPS memory from model in-place without CPU transfer.
+    Release all GPU memory from model in-place without CPU transfer.
     
     Args:
         model: PyTorch model to release memory from
@@ -399,14 +370,14 @@ def release_model_memory(model: Optional[torch.nn.Module], debug: Optional[Any] 
         released_buffers = 0
         
         for param in model.parameters():
-            if param.is_cuda or param.is_mps:
+            if param.is_cuda:
                 if param.numel() > 0:
                     param.data.set_()
                     released_params += 1
                 param.grad = None
                 
         for buffer in model.buffers():
-            if buffer.is_cuda or buffer.is_mps:
+            if buffer.is_cuda:
                 if buffer.numel() > 0:
                     buffer.data.set_()
                     released_buffers += 1
@@ -630,7 +601,7 @@ def _standard_model_movement(model: torch.nn.Module, current_device: torch.devic
         cleared_count = 0
         for module in model.modules():
             if hasattr(module, 'memory') and module.memory is not None:
-                if torch.is_tensor(module.memory) and (module.memory.is_cuda or module.memory.is_mps):
+                if torch.is_tensor(module.memory) and module.memory.is_cuda:
                     module.memory = None
                     cleared_count += 1
         if cleared_count > 0 and debug:

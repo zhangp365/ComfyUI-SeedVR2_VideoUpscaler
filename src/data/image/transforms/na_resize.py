@@ -25,7 +25,7 @@ def NaResize(
     downsample_only: bool,
     interpolation: InterpolationMode = InterpolationMode.BICUBIC,
 ):
-    Interpolation = InterpolationMode.BILINEAR if torch.mps.is_available() else interpolation
+    Interpolation = interpolation
     if mode == "area":
         return AreaResize(
             max_area=resolution**2,

@@ -47,8 +47,6 @@ def get_device() -> torch.device:
     """
     Get current rank device.
     """
-    if torch.mps.is_available():
-        return "mps"
     return torch.device("cuda", get_local_rank())
 
 

@@ -309,7 +309,7 @@ class Debug:
         }
         
         # VRAM metrics
-        if torch.cuda.is_available() or torch.mps.is_available():
+        if torch.cuda.is_available():
             metrics['vram_allocated'], metrics['vram_reserved'], current_global_peak = get_vram_usage(debug=self)
             
             # Calculate peak since last log_memory_state
@@ -322,8 +322,7 @@ class Debug:
                 metrics['vram_free'] = vram_info["free_gb"]
                 metrics['vram_total'] = vram_info["total_gb"]
                 
-                backend = "MPS" if torch.mps.is_available() else "VRAM"
-                metrics['summary_vram'] = (f"  [{backend}] {metrics['vram_allocated']:.2f}GB allocated / "
+                metrics['summary_vram'] = (f"  [VRAM] {metrics['vram_allocated']:.2f}GB allocated / "
                         f"{metrics['vram_reserved']:.2f}GB reserved / "
                         f"Peak: {metrics['vram_peak_since_last']:.2f}GB / "
                         f"{metrics['vram_free']:.2f}GB free / "
@@ -345,7 +344,7 @@ class Debug:
             metrics['summary_ram'] = ""
         
         # Update VRAM history for tracking
-        if torch.cuda.is_available() or torch.mps.is_available():
+        if torch.cuda.is_available():
             self.vram_history.append(metrics['vram_allocated'])
         
         return metrics
@@ -374,7 +373,7 @@ class Debug:
             try:
                 if torch.is_tensor(obj):
                     stats['total_count'] += 1
-                    is_gpu = obj.is_cuda or (hasattr(obj, 'is_mps') and obj.is_mps)
+                    is_gpu = obj.is_cuda
                     
                     if is_gpu:
                         stats['gpu_count'] += 1

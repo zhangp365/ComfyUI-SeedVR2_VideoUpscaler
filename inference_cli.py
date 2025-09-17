@@ -515,14 +515,11 @@ def main():
         sys.exit(1)
     
     if args.debug:
-        if platform.system() == "Darwin":
-            print("You are running on macOS and will use the MPS backend!")
-        else:
-            # Show actual CUDA device visibility
-            debug.log(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}", category="device")
-            if torch.cuda.is_available():
-                debug.log(f"torch.cuda.device_count(): {torch.cuda.device_count()}", category="device")
-                debug.log(f"Using device index 0 inside script (mapped to selected GPU)", category="device")
+        # Show actual CUDA device visibility
+        debug.log(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}", category="device")
+        if torch.cuda.is_available():
+            debug.log(f"torch.cuda.device_count(): {torch.cuda.device_count()}", category="device")
+            debug.log(f"Using device index 0 inside script (mapped to selected GPU)", category="device")
     
     try:
         # Ensure --output is a directory when using PNG format
@@ -547,10 +544,7 @@ def main():
         # debug.log(f"Initial VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB", category="memory")
 
         # Parse GPU list
-        if platform.system() == "Darwin":
-            device_list = ["0"]
-        else:
-            device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
+        device_list = [d.strip() for d in str(args.cuda_device).split(',') if d.strip()] if args.cuda_device else ["0"]
         
         if args.debug:
             debug.log(f"Using devices: {device_list}", category="device")

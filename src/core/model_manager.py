@@ -167,8 +167,6 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     
     # Set device
     device = str(get_device())
-    #if torch.mps.is_available():
-    #    device = "mps"
     
     # Configure models
     dit_checkpoint_path = os.path.join(base_cache_dir, f'./{model}')
@@ -179,16 +177,10 @@ def configure_runner(model, base_cache_dir, preserve_vram=False, debug=None,
     debug.end_timer("dit_model_infer", "DiT model configuration")
     debug.log_memory_state("After DiT model configuration", detailed_tensors=False)
 
-    # Set VAE dtype for MPS compatibility
-    if torch.mps.is_available():
-        original_vae_dtype = config.vae.dtype
-        config.vae.dtype = "bfloat16"
-        debug.log(f"MPS detected: Setting VAE dtype from {original_vae_dtype} to {config.vae.dtype} for compatibility", 
-                    category="precision", force=True)
     
     debug.start_timer("vae_model_infer")
     vae_checkpoint_path = os.path.join(base_cache_dir, f'./{config.vae.checkpoint}')
-    vae_override_dtype = getattr(torch, config.vae.dtype) if torch.mps.is_available() else None
+    vae_override_dtype = None
     runner = configure_model_inference(runner, "vae", device, vae_checkpoint_path, config,
                                    preserve_vram, debug=debug, override_dtype=vae_override_dtype)
     debug.log(f"VAE downsample factors configured (spatial: {spatial_downsample_factor}x, temporal: {temporal_downsample_factor}x)", category="vae")
@@ -270,7 +262,6 @@ def configure_model_inference(runner, model_type, device, checkpoint_path, confi
         debug: Debug instance for logging and profiling
         block_swap_config (dict): BlockSwap configuration (DiT only)
         override_dtype (torch.dtype, optional): Override model weights dtype during loading
-            (e.g., torch.bfloat16 for MPS compatibility)
         
     Returns:
         runner: Updated runner with configured model
@@ -368,7 +359,6 @@ def _load_model_weights(model, checkpoint_path, target_device, used_meta,
         cpu_reason: Reason string if using CPU
         debug: Debug instance
         override_dtype (torch.dtype, optional): Convert weights to this dtype during loading
-            (e.g., torch.bfloat16 for MPS compatibility)
         
     Returns:
         Model with loaded weights
