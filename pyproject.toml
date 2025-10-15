@@ -1,37 +1,39 @@
 [project]
 name = "seedvr2_videoupscaler"
-description = "Welcome to the ComfyUI-SeedVR2 Video Upscaler repository! This project offers a non-official video upscaling tool designed specifically for ComfyUI. With this tool, you can enhance your video quality, making your visual content more engaging and clearer."
-version = "1.0.0"
+description = "ComfyUI integration of ByteDance-Seed's SeedVR2: One-step diffusion-based video/image upscaling with memory-efficient inference"
+version = "2.0.0"
+authors = [
+    {name = "numz"},
+    {name = "adrientoupet"}
+]
 license = {file = "LICENSE"} 
-# classifiers = [
-#     # For OS-independent nodes (works on all operating systems)
-#     "Operating System :: OS Independent",
-#
-#     # OR for OS-specific nodes, specify the supported systems:
-#     "Operating System :: Microsoft :: Windows",  # Windows specific
-#     "Operating System :: POSIX :: Linux",  # Linux specific
-#     "Operating System :: MacOS",  # macOS specific
-#
-#     # GPU Accelerator support. Pick the ones that are supported by your extension.
-#     "Environment :: GPU :: NVIDIA CUDA",    # NVIDIA CUDA support
-#     "Environment :: GPU :: AMD ROCm",       # AMD ROCm support
-#     "Environment :: GPU :: Intel Arc",      # Intel Arc support
-#     "Environment :: NPU :: Huawei Ascend",  # Huawei Ascend support
-#     "Environment :: GPU :: Apple Metal",    # Apple Metal support
-# ]
-
-dependencies = ["einops                   # Tensor operations", "omegaconf>=2.3.0                # Configuration system.", "diffusers>=0.34.0                # Diffusers", "pytorch-extension #pytorch extension", "rotary_embedding_torch", "opencv-python", "peft>=0.15.0"]
+classifiers = [
+     "Operating System :: OS Independent",
+     "Environment :: GPU :: NVIDIA CUDA"
+]
+dependencies = [
+    "torch",
+    "torchvision",
+    "safetensors",
+    "numpy",
+    "tqdm",
+    "psutil",
+    "einops",
+    "omegaconf>=2.3.0",
+    "diffusers>=0.33.1",
+    "rotary_embedding_torch>=0.5.3",
+    "opencv-python",
+    "gguf"
+]
 
 [project.urls]
 Repository = "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler"
-#  Used by Comfy Registry https://registry.comfy.org
-Documentation = "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/wiki"
+Documentation = "https://www.youtube.com/@AInVFX"
 "Bug Tracker" = "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/issues"
+"Forum" = "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/discussions"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "ainvfx"
 DisplayName = "ComfyUI-SeedVR2_VideoUpscaler"
 Icon = ""
-includes = [] 
-# "requires-comfyui" = ">=1.0.0"  # ComfyUI version compatibility
-
+includes = []
