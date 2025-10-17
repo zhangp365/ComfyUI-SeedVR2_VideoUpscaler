@@ -103,7 +103,7 @@ class SeedVR2:
     CATEGORY = "SEEDVR2"
 
     def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
-        batch_size: int, preserve_vram: bool, block_swap_config=None) -> Tuple[torch.Tensor]:
+        batch_size: int, preserve_vram: bool, cfg_scale: float=1.0, block_swap_config=None) -> Tuple[torch.Tensor]:
         """Execute SeedVR2 video upscaling with progress reporting"""
         
         temporal_overlap = 0 
@@ -111,7 +111,6 @@ class SeedVR2:
         
         download_weight(model)
         debug = False
-        cfg_scale = 1.0
         try:
             return self._internal_execute(images, model, seed, new_resolution, cfg_scale, batch_size, preserve_vram, temporal_overlap, debug, block_swap_config)
         except Exception as e:
@@ -314,6 +313,66 @@ class SeedVR2:
             pass
 
 
+class SeedVR2Advance(SeedVR2):
+    """
+    SeedVR2 Advanced Video Upscaler ComfyUI Node
+    
+    Enhanced version of SeedVR2 with additional CFG scale control and advanced parameters.
+    Inherits all functionality from SeedVR2 while providing more control over generation.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Dict[str, Any]]:
+        """
+        Define ComfyUI input parameter types with additional advanced controls
+        
+        Returns:
+            Dictionary defining input parameters, types, and validation
+        """
+        # Get base input types from parent class
+        base_types = super().INPUT_TYPES()
+        
+        # Add additional advanced parameters
+        base_types["required"].update({
+            "cfg_scale": ("FLOAT", {
+                "default": 1.0, 
+                "min": 0.1, 
+                "max": 10.0, 
+                "step": 0.1,
+                "tooltip": "Classifier-free guidance scale for generation control"
+            }),
+            "temporal_overlap": ("INT", {
+                "default": 0, 
+                "min": 0, 
+                "max": 100, 
+                "step": 1,
+                "tooltip": "Number of frames for temporal overlap between batches"
+            }),
+            "debug": ("BOOLEAN", {
+                "default": False,
+                "tooltip": "Enable debug mode for detailed logging"
+            }),
+        })
+        
+        return base_types
+    
+    def execute(self, images: torch.Tensor, model: str, seed: int, new_resolution: int, 
+        batch_size: int, preserve_vram: bool, cfg_scale: float, temporal_overlap: int, 
+        debug: bool, block_swap_config=None) -> Tuple[torch.Tensor]:
+        """Execute SeedVR2 advanced video upscaling with enhanced controls"""
+        
+        print(f"🔄 Preparing advanced model: {model}")
+        print(f"🎛️ CFG Scale: {cfg_scale}, Temporal Overlap: {temporal_overlap}, Debug: {debug}")
+        
+        download_weight(model)
+        try:
+            return self._internal_execute(images, model, seed, new_resolution, cfg_scale, 
+                batch_size, preserve_vram, temporal_overlap, debug, block_swap_config)
+        except Exception as e:
+            self.cleanup(force_ram_cleanup=True)
+            raise e
+
+
 class SeedVR2BlockSwap:
     """Configure block swapping to reduce VRAM usage"""
 
@@ -424,12 +483,14 @@ The actual memory savings depend on your specific model architecture and will be
 # ComfyUI Node Mappings
 NODE_CLASS_MAPPINGS = {
     "SeedVR2": SeedVR2,
+    "SeedVR2Advance": SeedVR2Advance,
     "SeedVR2BlockSwap": SeedVR2BlockSwap,
 }
 
 # Human-readable node display names
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SeedVR2": "SeedVR2 Video Upscaler",
+    "SeedVR2Advance": "SeedVR2 Advanced Video Upscaler",
     "SeedVR2BlockSwap": "SeedVR2 BlockSwap Config",
 }
 
@@ -441,6 +502,7 @@ __description__ = "High-quality video upscaling using advanced diffusion models"
 # Additional exports for introspection
 __all__ = [
     'SeedVR2',
+    'SeedVR2Advance',
     'NODE_CLASS_MAPPINGS', 
     'NODE_DISPLAY_NAME_MAPPINGS'
 ] 
